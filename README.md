@@ -1,7 +1,3 @@
-# SparDL: Distributed Deep Learning Training with Efficient Sparse Communication
-
-SparDL is a novel All-Reduce method for synchronizing sparse gradients in distributed deep learning. To handle the Gradient Accumulation (GA) dilemma without extra transmission, we combine Reduce-Scatter and All-Gather phases with multiple top-$k$ sparsification processes. And SparDL uses a non-recursive structure in the Spar-Reduce-Scatter algorithm to provide high flexibility for any number of workers. To ensure fast convergence under multiple top-$k$ selections, we use the global residual collection method to collect all discarded gradients in the cluster. To further improves the communication efficiency and and makes the ratio of latency and bandwidth cost adjustable, we propose Spar-All-Gather algorithm as part of SparDL.
-
 ## Requirements
 
 - Python 3.8.13
@@ -27,15 +23,19 @@ IMDB : Download from http://ai.stanford.edu/~amaas/data/sentiment/index.html
 To train and evaluate with SparDL on 2 workers, i.e., node0, node1
 
 ```
-mpiexec -n 2 -host node0,node1 python main_trainer.py --dnn vgg16 --dataset cifar10 --max-epochs 121 --batch-size 16 --nworkers 2 --data-dir vgg_data --lr 0.1 --compression --density 0.01 --compressor spardl
+mpiexec -n 4 -host localhost:4 bash run_multi_gpu.sh \
+  --dnn vgg16 \
+  --dataset cifar10 \
+  --max-epochs 50 \
+  --batch-size 32 \
+  --nworkers 4 \
+  --nwpernode 1 \
+  --data-dir ./vgg_data \
+  --lr 0.1 \
+  --compression \
+  --density 0.01 \
+  --compressor spardl
 ```
-
-or using shell script
-
-```
-sh vgg16_spardl.sh
-```
-
 
 The meaning of the flags:
 
