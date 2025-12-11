@@ -1261,9 +1261,9 @@ class AllReducer():
                             self.h_step) > 1 else -self.h_step
                         self.h_inertia = False
                     self.h = max(self.h + self.h_step, int(k / self.Group_num))
-                    logger.info((self.h, self.h_step, self.h_inertia,
-                                 len(send_index_buffer), k))
-                    logger.info(('grad size:', len(send_index_buffer), k))
+                    # logger.info((self.h, self.h_step, self.h_inertia,
+                    #              len(send_index_buffer), k))
+                    # logger.info(('grad size:', len(send_index_buffer), k))
                     if len(send_index_buffer) > k:
                         _, idx = torch.topk(send_value_buffer.abs(),
                                             k,
