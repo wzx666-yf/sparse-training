@@ -893,21 +893,20 @@ class AllReducer():
         full_mean = None
         full_var = None
 
-        if self._compression.name in ['topkA', 'topkA2']:
-            result, global_indexes, included_indexes = topk_sparse_allreduce(
-                self._comm,
-                entry,
-                self._sparse_storages[name],
-                indexes=topk_indexes,
-                dtype=np.float32)
-        elif self._compression.name in ['gtopk']:
+        if self._compression.name in ['gtopk']:
             result, global_indexes, included_indexes = gtopk_sparse_allreduce(
                 self._comm,
                 entry,
                 storage=self._sparse_storages[name],
                 indexes=topk_indexes,
                 dtype=np.float32)
-
+        else:
+            result, global_indexes, included_indexes = topk_sparse_allreduce(
+                self._comm,
+                entry,
+                self._sparse_storages[name],
+                indexes=topk_indexes,
+                dtype=np.float32)
         r = torch.from_numpy(result)
         gi = torch.from_numpy(global_indexes.astype(np.int64))
         stime = time.time()
@@ -920,7 +919,7 @@ class AllReducer():
         tensor.fill_(0.0)
         if self._compression.name in ['gtopk']:
             tensor[final_indexes] = r
-        elif self._compression.name in ['topkA', 'topkA2']:
+        else:
             num_workers = self._comm.size
             nnz = topk_indexes.size(0)
             for i in range(num_workers):
@@ -993,6 +992,36 @@ class AllReducer():
                 device = self._device
 
                 stime = time.time()
+                # Ensure non-Spardl paths also produce a merged result tensor
+                if not (self._sparse and self._compression.name == 'spardl'):
+                    if self._sparse:
+                        # Use the selected compressor to compute sparse indices/values
+                        try:
+                            out1, out2 = self._compression.compress(new_tensor, name=new_name, ratio=self._density)
+                        except TypeError:
+                            out1, out2 = None, None
+                        topk_indexes = None
+                        selected_tensor = None
+                        if out2 is None:
+                            # Compressor indicates dense or no selection
+                            result = self._dense_allreduce(new_name, new_tensor)
+                        else:
+                            # Determine whether compressor returned (indexes, values) or (tensor, indexes)
+                            if isinstance(out1, torch.Tensor) and out1.dtype in (torch.int32, torch.int64):
+                                topk_indexes = out1.to(device=new_tensor.device, dtype=torch.long)
+                                selected_tensor = out2.to(device=new_tensor.device)
+                            else:
+                                topk_indexes = out2.to(device=new_tensor.device, dtype=torch.long)
+                                selected_tensor = new_tensor[topk_indexes]
+                            # Allreduce sparse selection; reconstruct a dense merged vector
+                            result, _, _ = self._sparse_allreduce(new_name,
+                                                              new_tensor,
+                                                              selected_tensor,
+                                                              new_tensor.shape,
+                                                              topk_indexes)
+                    else:
+                        # Dense fallback
+                        result = self._dense_allreduce(new_name, new_tensor)
                 if self._sparse and self._compression.name == 'spardl':
                     num_workers = self.num_workers
                     density = self._density
@@ -1040,7 +1069,7 @@ class AllReducer():
                                 whole_value_rbuffers[self.chunck_size * i:])
                             all_size_rbuffers.append(np.array([0]))
 
-                    # 预分配结果张量，避免后续分支导致 result 未定义
+                    # 预分配结果张量，避免后续分支导致 result 未定�?
                     result = torch.zeros((self.num_workers, self.chunck_size),
                                          dtype=torch.float32,
                                          device=device)
@@ -1291,7 +1320,7 @@ class AllReducer():
                     # if self.rank()==0:
                     #     logger.info(("sr time:", time.time()-sr_time))
 
-                    # ——————————————————allgather——————————————————
+                    # ——————————————————allgather—————————————————�?
                     ag_time = time.time()
                     rank = rank_ALL % num_workers
                     rank_bias = rank_ALL - rank
