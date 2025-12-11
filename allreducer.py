@@ -994,34 +994,41 @@ class AllReducer():
                 stime = time.time()
                 # Ensure non-Spardl paths also produce a merged result tensor
                 if not (self._sparse and self._compression.name == 'spardl'):
-                    if self._sparse:
-                        # Use the selected compressor to compute sparse indices/values
-                        try:
-                            out1, out2 = self._compression.compress(new_tensor, name=new_name, ratio=self._density)
-                        except TypeError:
-                            out1, out2 = None, None
-                        topk_indexes = None
-                        selected_tensor = None
-                        if out2 is None:
-                            # Compressor indicates dense or no selection
-                            result = self._dense_allreduce(new_name, new_tensor)
-                        else:
-                            # Determine whether compressor returned (indexes, values) or (tensor, indexes)
-                            if isinstance(out1, torch.Tensor) and out1.dtype in (torch.int32, torch.int64):
-                                topk_indexes = out1.to(device=new_tensor.device, dtype=torch.long)
-                                selected_tensor = out2.to(device=new_tensor.device)
-                            else:
-                                topk_indexes = out2.to(device=new_tensor.device, dtype=torch.long)
-                                selected_tensor = new_tensor[topk_indexes]
-                            # Allreduce sparse selection; reconstruct a dense merged vector
-                            result, _, _ = self._sparse_allreduce(new_name,
-                                                              new_tensor,
-                                                              selected_tensor,
-                                                              new_tensor.shape,
-                                                              topk_indexes)
-                    else:
-                        # Dense fallback
-                        result = self._dense_allreduce(new_name, new_tensor)
+                     if self._sparse:
+                         # Use the selected compressor to compute sparse indices/values and time it
+                         cstime = time.time()
+                         try:
+                             out1, out2 = self._compression.compress(new_tensor, name=new_name, ratio=self._density)
+                         except TypeError:
+                             out1, out2 = None, None
+                         topk_indexes = None
+                         selected_tensor = None
+                         if out2 is None:
+                             # Compressor indicates dense or no selection
+                             result = self._dense_allreduce(new_name, new_tensor)
+                             cp_time = time.time() - cstime
+                             force_insert_item(self._compression_timers, new_name, cp_time)
+                             force_insert_item(self._compression_timers2, new_name, cp_time)
+                         else:
+                             # Determine whether compressor returned (indexes, values) or (tensor, indexes)
+                             if isinstance(out1, torch.Tensor) and out1.dtype in (torch.int32, torch.int64):
+                                 topk_indexes = out1.to(device=new_tensor.device, dtype=torch.long)
+                                 selected_tensor = out2.to(device=new_tensor.device)
+                             else:
+                                 topk_indexes = out2.to(device=new_tensor.device, dtype=torch.long)
+                                 selected_tensor = new_tensor[topk_indexes]
+                             cp_time = time.time() - cstime
+                             force_insert_item(self._compression_timers, new_name, cp_time)
+                             force_insert_item(self._compression_timers2, new_name, cp_time)
+                             # Allreduce sparse selection; reconstruct a dense merged vector
+                             result, _, _ = self._sparse_allreduce(new_name,
+                                                               new_tensor,
+                                                               selected_tensor,
+                                                               new_tensor.shape,
+                                                               topk_indexes)
+                     else:
+                         # Dense fallback
+                         result = self._dense_allreduce(new_name, new_tensor)
                 if self._sparse and self._compression.name == 'spardl':
                     num_workers = self.num_workers
                     density = self._density
