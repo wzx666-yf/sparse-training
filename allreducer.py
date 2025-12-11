@@ -1040,6 +1040,11 @@ class AllReducer():
                                 whole_value_rbuffers[self.chunck_size * i:])
                             all_size_rbuffers.append(np.array([0]))
 
+                    # 预分配结果张量，避免后续分支导致 result 未定义
+                    result = torch.zeros((self.num_workers, self.chunck_size),
+                                         dtype=torch.float32,
+                                         device=device)
+
                     cstime = time.time()
                     g_id = self.all_send_blocks[0] if len(
                         self.all_send_blocks) else 0
