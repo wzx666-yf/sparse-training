@@ -581,7 +581,11 @@ class HggTopkCompressor():
             L = torch.log1p(gamma * max_abs)
             mapped = torch.log1p(gamma * abs_t) / (L + 1e-12)
             bins = torch.clamp((B * mapped).floor().to(torch.long), 0, B - 1)
-            # bincount on GPU; fallback to CPU if unsupported\n            try:\n                hist = torch.bincount(bins, minlength=B)\n            except Exception:\n                hist = torch.bincount(bins.cpu(), minlength=B).to(bins.device)
+            # bincount on GPU; fallback to CPU if unsupported
+            try:
+                hist = torch.bincount(bins, minlength=B)
+            except Exception:
+                hist = torch.bincount(bins.cpu(), minlength=B).to(bins.device)
             suff = torch.flip(torch.cumsum(torch.flip(hist, dims=[0]), dim=0), dims=[0])
             suff_list = suff.tolist()
 

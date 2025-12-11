@@ -76,6 +76,12 @@ def robust_ssgd(dnn,
 
     compressor = compressor if compression else 'none'
     compressor = compressors[compressor]
+    # Set HggTopk params if selected
+    if compressor.name == 'HggTopk':
+        compressor.B = args.hggtopk_bins
+        compressor.gamma = args.hggtopk_gamma
+        compressor.beta = args.hggtopk_beta
+        logger.info('HggTopk params: B=%d, gamma=%.3f, beta=%.3f', compressor.B, compressor.gamma, compressor.beta)
     is_sparse = compression
 
     logger.info('Broadcast parameters....')
@@ -220,6 +226,12 @@ if __name__ == '__main__':
         default='topk',
         choices=compressors.keys(),
         help='Specify the compressors if \'compression\' is open')
+    parser.add_argument('--hggtopk-bins', type=int, default=1024,
+                            help='HggTopk: number of log bins (default: 1024)')
+    parser.add_argument('--hggtopk-gamma', type=float, default=1000.0,
+                            help='HggTopk: log mapping gamma (default: 1000.0)')
+    parser.add_argument('--hggtopk-beta', type=float, default=0.98,
+                            help='HggTopk: conservative interpolation factor (default: 0.98)')
     parser.add_argument('--sigma-scale',
                         type=float,
                         default=2.5,
