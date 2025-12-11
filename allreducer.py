@@ -1020,6 +1020,21 @@ class AllReducer():
                              cp_time = time.time() - cstime
                              force_insert_item(self._compression_timers, new_name, cp_time)
                              force_insert_item(self._compression_timers2, new_name, cp_time)
+                             # Ensure fixed k across ranks for sparse allreduce
+                             k_target = max(1, int(new_tensor.numel() * self._density))
+                             if topk_indexes is not None and topk_indexes.numel() != k_target:
+                                  if topk_indexes.numel() > k_target:
+                                      _vals = selected_tensor.abs()
+                                      _, _loc = torch.topk(_vals, k_target, sorted=False)
+                                      topk_indexes = topk_indexes[_loc]
+                                      selected_tensor = selected_tensor[_loc]
+                                  else:
+                                      need = k_target - topk_indexes.numel()
+                                      rem = new_tensor.abs().clone()
+                                      rem[topk_indexes] = 0
+                                      _, extra_idx = torch.topk(rem, need, sorted=False)
+                                      topk_indexes = torch.cat((topk_indexes, extra_idx.to(dtype=topk_indexes.dtype, device=topk_indexes.device)))
+                                      selected_tensor = new_tensor[topk_indexes]
                              # Allreduce sparse selection; reconstruct a dense merged vector
                              result, _, _ = self._sparse_allreduce(new_name,
                                                                new_tensor,
@@ -1076,7 +1091,7 @@ class AllReducer():
                                 whole_value_rbuffers[self.chunck_size * i:])
                             all_size_rbuffers.append(np.array([0]))
 
-                    # 预分配结果张量，避免后续分支导致 result 未定�?
+                    # 预分配结果张量，避免后续分支导致 result 未定�?
                     result = torch.zeros((self.num_workers, self.chunck_size),
                                          dtype=torch.float32,
                                          device=device)
@@ -1327,7 +1342,7 @@ class AllReducer():
                     # if self.rank()==0:
                     #     logger.info(("sr time:", time.time()-sr_time))
 
-                    # ——————————————————allgather—————————————————�?
+                    # ——————————————————allgather—————————————————�?
                     ag_time = time.time()
                     rank = rank_ALL % num_workers
                     rank_bias = rank_ALL - rank
