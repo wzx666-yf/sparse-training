@@ -82,7 +82,9 @@ def robust_ssgd(dnn,
         compressor.gamma = args.hggtopk_gamma
         compressor.beta = args.hggtopk_beta
         logger.info('HggTopk params: B=%d, gamma=%.3f, beta=%.3f', compressor.B, compressor.gamma, compressor.beta)
-    is_sparse = compression
+        compressor.sample_ratio = args.hggtopk_sample_ratio
+        compressor.sample_min = args.hggtopk_sample_min
+        logger.info('HggTopk sampling: ratio=%.4f, min=%d', compressor.sample_ratio, compressor.sample_min)
 
     logger.info('Broadcast parameters....')
     #print("rank: ", rank, "before bcast model_state: ", trainer.net.state_dict())
@@ -232,6 +234,10 @@ if __name__ == '__main__':
                             help='HggTopk: log mapping gamma (default: 1000.0)')
     parser.add_argument('--hggtopk-beta', type=float, default=0.98,
                             help='HggTopk: conservative interpolation factor (default: 0.98)')
+    parser.add_argument('--hggtopk-sample-ratio', type=float, default=0.02,
+                        help='HggTopk: sampling ratio for histogram (default: 0.02)')
+    parser.add_argument('--hggtopk-sample-min', type=int, default=65536,
+                        help='HggTopk: min sample size for histogram (default: 65536)')
     parser.add_argument('--sigma-scale',
                         type=float,
                         default=2.5,

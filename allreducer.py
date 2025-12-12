@@ -1036,11 +1036,14 @@ class AllReducer():
                                       topk_indexes = torch.cat((topk_indexes, extra_idx.to(dtype=topk_indexes.dtype, device=topk_indexes.device)))
                                       selected_tensor = new_tensor[topk_indexes]
                              # Allreduce sparse selection; reconstruct a dense merged vector
+                             stime2 = time.time()
                              result, _, _ = self._sparse_allreduce(new_name,
-                                                               new_tensor,
-                                                               selected_tensor,
-                                                               new_tensor.shape,
-                                                               topk_indexes)
+                                                                           new_tensor,
+                                                                           selected_tensor,
+                                                                           new_tensor.shape,
+                                                                           topk_indexes)
+                             force_insert_item(self._allreduce_timers, new_name, time.time() - stime2)
+                             force_insert_item(self._allreduce_timers2, new_name, time.time() - stime2)
                      else:
                          # Dense fallback
                          result = self._dense_allreduce(new_name, new_tensor)
@@ -1091,7 +1094,7 @@ class AllReducer():
                                 whole_value_rbuffers[self.chunck_size * i:])
                             all_size_rbuffers.append(np.array([0]))
 
-                    # 预分配结果张量，避免后续分支导致 result 未定�?
+                    # 预分配结果张量，避免后续分支导致 result 未定�?
                     result = torch.zeros((self.num_workers, self.chunck_size),
                                          dtype=torch.float32,
                                          device=device)
