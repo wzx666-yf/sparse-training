@@ -711,6 +711,7 @@ class SpardlCompressor(GaussianCompressor):
 
 compressors = {
     'HggTopk': HggTopkCompressor,
+    'hggtopk': HggTopkCompressor,
     'topkA': TopKACompressor,
     'topkAopt': TopKAoptCompressor,
     'topkA2': TopKACompressor2,
