@@ -86,6 +86,9 @@ def robust_ssgd(dnn,
         compressor.sample_min = args.hggtopk_sample_min
         logger.info('HggTopk sampling: ratio=%.4f, min=%d', compressor.sample_ratio, compressor.sample_min)
 
+        compressor.warmup_steps = args.hggtopk_warmup_steps
+        compressor.warmup_enabled = (args.hggtopk_warmup_steps > 0)
+        logger.info('HggTopk warmup: steps=%d, enabled=%s', compressor.warmup_steps, str(compressor.warmup_enabled))
     logger.info('Broadcast parameters....')
     #print("rank: ", rank, "before bcast model_state: ", trainer.net.state_dict())
     model_state = comm.bcast(trainer.net.state_dict(), root=0)
@@ -104,6 +107,7 @@ def robust_ssgd(dnn,
     logger.info('Broadcast parameters finished....')
 
     norm_clip = None
+    is_sparse = compression
     optimizer = dopt.DistributedOptimizer(trainer.optimizer,
                                           trainer.net.named_parameters(),
                                           compression=compressor,
@@ -238,6 +242,8 @@ if __name__ == '__main__':
                         help='HggTopk: sampling ratio for histogram (default: 0.02)')
     parser.add_argument('--hggtopk-sample-min', type=int, default=65536,
                         help='HggTopk: min sample size for histogram (default: 65536)')
+    parser.add_argument('--hggtopk-warmup-steps', type=int, default=5,
+                        help='HggTopk: use full histogram for first N steps (0 to disable)')
     parser.add_argument('--sigma-scale',
                         type=float,
                         default=2.5,

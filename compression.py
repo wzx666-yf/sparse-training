@@ -501,31 +501,28 @@ class GaussianCompressor():
 
 class HggTopkCompressor():
     name = 'HggTopk'
+    steps = {}
+    warmup_steps = 5
+    warmup_enabled = True
     residuals = {}
     prev_bin = {}
     prev_thr = {}
     B = 1024
     gamma = 1000.0
     beta = 0.98
-    sample_ratio = 0.02     # use 2% sample to estimate threshold
-    sample_min = 65536      # at least this many elements for sampling
-
+    sample_ratio = 0.02
+    sample_min = 65536
     @staticmethod
     def clear():
         HggTopkCompressor.residuals = {}
         HggTopkCompressor.prev_bin = {}
         HggTopkCompressor.prev_thr = {}
-
+        HggTopkCompressor.steps = {}
     @staticmethod
     def _binary_search_suff(suff, k):
-        # suff: 1D tensor (length B), non-increasing
-        # Find largest idx with suff[idx] >= k
-        # Equivalent to: (suff >= k).sum() - 1
         return int((suff >= k).sum().item()) - 1
-
     @staticmethod
     def _gallop_search_suff(suff, k, idx_prev):
-        # suff: 1D tensor on same device; k: int; idx_prev: int
         B = suff.numel()
         if idx_prev < 0 or idx_prev >= B:
             return HggTopkCompressor._binary_search_suff(suff, k)
@@ -549,7 +546,6 @@ class HggTopkCompressor():
             step *= 2
         lo = min(last, curr)
         hi = max(last, curr)
-        # binary refine
         while lo <= hi:
             mid = (lo + hi) // 2
             c = int(suff[mid].item())
@@ -558,63 +554,51 @@ class HggTopkCompressor():
             else:
                 hi = mid - 1
         return max(0, min(B - 1, hi))
-
     @staticmethod
     def compress(tensor, name=None, ratio=0.05, **kwargs):
-        # Returns (tensor, indexes) for outer caller
         with torch.no_grad():
             if name not in HggTopkCompressor.residuals:
                 HggTopkCompressor.residuals[name] = torch.zeros_like(tensor.data)
-            # error-feedback
+            step = HggTopkCompressor.steps.get(name, 0) + 1
+            HggTopkCompressor.steps[name] = step
             t = tensor.data.add(HggTopkCompressor.residuals[name].data)
             abs_t = torch.abs(t)
             numel = t.numel()
             k = max(int(numel * ratio), 1)
-
             max_abs = abs_t.max()
             if max_abs.item() == 0.0:
                 idx = torch.arange(k, device=t.device, dtype=torch.long)
                 HggTopkCompressor.residuals[name].data = t + 0.0
                 HggTopkCompressor.residuals[name].data[idx] = 0.0
                 return t, idx
-
             B = HggTopkCompressor.B
             gamma = HggTopkCompressor.gamma
-            # Precompute bin edges in value domain (length B+1)
             L = torch.log1p(gamma * max_abs)
             edges = torch.expm1(torch.linspace(0.0, 1.0, steps=B + 1, device=t.device) * L) / gamma
             edges = torch.clamp(edges, min=0.0)
-
-            # Sample for histogram to avoid O(N) expensive transforms
-            sr = HggTopkCompressor.sample_ratio
-            smin = HggTopkCompressor.sample_min
-            if numel > smin:
-                sample_n = max(int(numel * sr), smin)
-                sample_n = min(sample_n, numel)
-                # sample with replacement is fine for histogram estimation
-                samp_idx = torch.randint(0, numel, (sample_n,), device=t.device)
-                abs_s = abs_t[samp_idx]
-            else:
-                sample_n = numel
+            use_full = HggTopkCompressor.warmup_enabled and (step <= HggTopkCompressor.warmup_steps)
+            if use_full:
                 abs_s = abs_t
-
-            # Assign bins via bucketize (binary search), avoiding per-element log
-            # bucketize returns indices in [0, B]; convert to [0, B-1]
+                sample_n = numel
+            else:
+                sr = HggTopkCompressor.sample_ratio
+                smin = HggTopkCompressor.sample_min
+                if numel > smin:
+                    sample_n = max(int(numel * sr), smin)
+                    sample_n = min(sample_n, numel)
+                    samp_idx = torch.randint(0, numel, (sample_n,), device=t.device)
+                    abs_s = abs_t[samp_idx]
+                else:
+                    sample_n = numel
+                    abs_s = abs_t
             bins = torch.bucketize(abs_s, edges[1:], right=False)
             bins = torch.clamp(bins, 0, B - 1)
-
-            # histogram on device, fallback if needed
             try:
                 hist = torch.bincount(bins, minlength=B)
             except Exception:
                 hist = torch.bincount(bins.cpu(), minlength=B).to(bins.device)
-
-            # suffix sum (from high to low)
             suff = torch.flip(torch.cumsum(torch.flip(hist, dims=[0]), dim=0), dims=[0])
-
-            # target count in sample domain
-            K_sample = max(1, int(round(k * (sample_n / float(numel)))))
-
+            K_sample = k if use_full else max(1, int(round(k * (sample_n / float(numel)))))
             eps = max(1, int(0.01 * K_sample))
             if name in HggTopkCompressor.prev_bin:
                 idx_prev = HggTopkCompressor.prev_bin[name]
@@ -625,11 +609,7 @@ class HggTopkCompressor():
                     idx_crit = HggTopkCompressor._gallop_search_suff(suff, K_sample, idx_prev)
             else:
                 idx_crit = HggTopkCompressor._binary_search_suff(suff, K_sample)
-
-            # guard
             idx_crit = max(0, min(B - 1, idx_crit))
-
-            # interpolate threshold within bin using edges
             T_low = edges[idx_crit]
             T_high = edges[idx_crit + 1] if idx_crit + 1 < edges.numel() else edges[idx_crit]
             width = torch.clamp(T_high - T_low, min=1e-12)
@@ -639,8 +619,6 @@ class HggTopkCompressor():
             beta = HggTopkCompressor.beta
             frac = 1.0 - (K_remain / max(1, N_bin))
             T_final = (T_low + width * frac * beta).item()
-
-            # select on full tensor and fix to exactly k
             mask = abs_t >= T_final
             sel_idx = mask.nonzero(as_tuple=False).view(-1)
             if sel_idx.numel() > k:
@@ -649,28 +627,19 @@ class HggTopkCompressor():
                 sel_idx = sel_idx[loc]
             elif sel_idx.numel() < k:
                 need = k - sel_idx.numel()
-                # Choose remaining top-|g| excluding already selected
-                # set selected to -inf surrogate
                 rem = abs_t.clone()
                 if sel_idx.numel() > 0:
                     rem.index_fill_(0, sel_idx, -1.0)
                 _, extra = torch.topk(rem, need, sorted=False)
                 sel_idx = torch.cat((sel_idx, extra))
-
-            # update residuals (error feedback)
             HggTopkCompressor.residuals[name].data = t + 0.0
             HggTopkCompressor.residuals[name].data[sel_idx] = 0.0
-
-            # keep history in bin index and numeric threshold
             HggTopkCompressor.prev_bin[name] = int(idx_crit)
             HggTopkCompressor.prev_thr[name] = float(T_final)
-
             return t, sel_idx
-
     @staticmethod
     def decompress(tensor, ctc, name=None):
         return tensor
-class TopKACompressor(TopKCompressor):
     name = 'topkA'
 
 
