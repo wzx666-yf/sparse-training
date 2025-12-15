@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+\n    if dopt.rank() == 0: logger.info('[CODEX][CN] 训练总时长: %f s', time.time() - training_start)
+    if dopt.rank() == 0: logger.info('[CODEX][CN] 训练总时长: %f s', time.time() - training_start)
 from __future__ import print_function
 import time
 import torch
@@ -129,6 +131,7 @@ def robust_ssgd(dnn,
     NUM_OF_DISLAY = 20
     display = NUM_OF_DISLAY if iters_per_epoch > NUM_OF_DISLAY else iters_per_epoch - 1
     logger.info('Start training ....')
+    training_start = time.time()
     for epoch in range(max_epochs):
         epoch_time = time.time()
         trainer.the_test_time = 0
@@ -162,9 +165,8 @@ def robust_ssgd(dnn,
                     batch_size * nsteps_update / time_per_iter,
                     optimizer.get_current_density())
         optimizer.add_train_epoch()
-        logger.info('Time per epoch including communication: %f, %f',
-                    time.time() - epoch_time - trainer.the_test_time,
-                    optimizer._allreducer.communication_time)
+        logger.info('Time per epoch including communication: %f, %f', time.time() - epoch_time - trainer.the_test_time, optimizer._allreducer.communication_time)
+        logger.info('[CODEX][CN] 第%d轮epoch耗时(含通信): %.6f s, 其中通信: %.6f s', epoch, time.time() - epoch_time - trainer.the_test_time, optimizer._allreducer.communication_time)
         if settings.PROFILING_NORM:
             # For comparison purpose ===>
             fn = os.path.join(relative_path,
@@ -209,7 +211,9 @@ def robust_ssgd(dnn,
         optimizer._allreducer._profiling_norms = []
     optimizer.stop()
 
+    if dopt.rank() == 0: logger.info("[CODEX] Total training time: %f s", time.time() - training_start)
 
+    if dopt.rank() == 0: logger.info('[CODEX][CN] 训练总时长: %f s', time.time() - training_start)
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="AllReduce trainer")
     parser.add_argument('--batch-size', type=int, default=32)

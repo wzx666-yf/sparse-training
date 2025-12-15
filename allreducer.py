@@ -326,6 +326,8 @@ class AllReducer():
         self._profiling_norms = []
 
         self._allreduce_timers2 = {}
+        # Codex extra accumulators (do not modify original timers)
+        self._codex_acc = {"merge":0.0, "compress":0.0, "comm":0.0, "demerge":0.0, "d2h":0.0, "h2d":0.0, "count":0}
         self._compression_timers2 = {}
         self._merge_timers2 = {}
         self._demerge_timers2 = {}
@@ -822,6 +824,11 @@ class AllReducer():
                 #     logger.info('[rank:%d]%s[%d]: %f,%f,%f,%f,%f,%f,%f', self.rank(), k[0:3]+'...'+k[-3:], sz, ct,mg,cp,ar,dm,d2h,h2d)
                 # else:
                 #     logger.info('[rank:%d]%s[%d]: %f,%f,%f,%f,%f,%f', self.rank(), k[0:3]+'...'+k[-3:], sz, ct,mg,ar,dm,d2h,h2d)
+            # CODEX summary (does not modify original timers)
+            if self._codex_acc.get("count",0) > 0 and self.rank() == 0:
+                c = max(1, int(self._codex_acc["count"]))
+                logger.info("[CODEX][rank:%d] total_avg: merge=%f, compress=%f, comm=%f, demerge=%f, d2h=%f, h2d=%f", self.rank(), self._codex_acc["merge"]/c, self._codex_acc["compress"]/c, self._codex_acc["comm"]/c, self._codex_acc["demerge"]/c, self._codex_acc["d2h"]/c, self._codex_acc["h2d"]/c)
+                self._codex_acc = {"merge":0.0, "compress":0.0, "comm":0.0, "demerge":0.0, "d2h":0.0, "h2d":0.0, "count":0}
                 mgs.pop(k, None)
 
                 if len(self._compression_timers) != 0:
@@ -887,12 +894,17 @@ class AllReducer():
             entry = ct.data.numpy()
         if self._profiling:
             force_insert_item(self._d2h_times, name, time.time() - stime)
+        try:
+            self._codex_acc["d2h"] += (time.time() - stime)
+        except Exception:
+            pass
 
         result = None
         included_indexes = None
         full_mean = None
         full_var = None
 
+        t_comm = time.time()
         if self._compression.name in ['gtopk']:
             result, global_indexes, included_indexes = gtopk_sparse_allreduce(
                 self._comm,
@@ -907,6 +919,10 @@ class AllReducer():
                 self._sparse_storages[name],
                 indexes=topk_indexes,
                 dtype=np.float32)
+        try:
+            self._codex_acc["comm"] += (time.time() - t_comm)
+        except Exception:
+            pass
         r = torch.from_numpy(result)
         gi = torch.from_numpy(global_indexes.astype(np.int64))
         stime = time.time()
@@ -939,6 +955,10 @@ class AllReducer():
         tensor /= self.size()
         if self._profiling:
             force_insert_item(self._h2d_times, name, time.time() - stime)
+        try:
+            self._codex_acc["h2d"] += (time.time() - stime)
+        except Exception:
+            pass
         return tensor, included_indexes, full_mean
 
     def _dense_allreduce(self, name, tensor):
@@ -982,6 +1002,10 @@ class AllReducer():
                 if self._profiling:
                     force_insert_item(self._merge_timers, new_name,
                                       time.time() - stime)
+                try:
+                    self._codex_acc["merge"] += (time.time() - stime)
+                except Exception:
+                    pass
 
                 if new_tensor is None:
                     continue
@@ -1008,6 +1032,10 @@ class AllReducer():
                              result = self._dense_allreduce(new_name, new_tensor)
                              cp_time = time.time() - cstime
                              force_insert_item(self._compression_timers, new_name, cp_time)
+                             try:
+                                 self._codex_acc["compress"] += cp_time
+                             except Exception:
+                                 pass
                              force_insert_item(self._compression_timers2, new_name, cp_time)
                          else:
                              # Determine whether compressor returned (indexes, values) or (tensor, indexes)
@@ -1018,6 +1046,10 @@ class AllReducer():
                                  topk_indexes = out2.to(device=new_tensor.device, dtype=torch.long)
                                  selected_tensor = new_tensor[topk_indexes]
                              cp_time = time.time() - cstime
+                            try:
+                                self._codex_acc["compress"] += cp_time
+                            except Exception:
+                                pass
                              force_insert_item(self._compression_timers, new_name, cp_time)
                              force_insert_item(self._compression_timers2, new_name, cp_time)
                              # Ensure fixed k across ranks for sparse allreduce
@@ -1436,6 +1468,10 @@ class AllReducer():
                 self._allreduce_counter += 1
                 comm_time = time.time() - stime
                 self.communication_time += comm_time
+                try:
+                    self._codex_acc["comm"] += comm_time
+                except Exception:
+                    pass
                 if self._profiling:
                     force_insert_item(self._allreduce_timers, new_name,
                                       time.time() - stime)
@@ -1448,6 +1484,10 @@ class AllReducer():
                 if self._profiling:
                     force_insert_item(self._demerge_timers, new_name,
                                       time.time() - stime)
+                    try:
+                        self._codex_acc["demerge"] += (time.time() - stime)
+                    except Exception:
+                        pass
                     force_insert_item(self._demerge_timers2, new_name,
                                       time.time() - stime)
                 for n in tensors:
@@ -1455,6 +1495,10 @@ class AllReducer():
                     self._entries.pop(n, None)
                     self._for_reductions.pop(n, None)
                 # self._comm.Barrier()
+                try:
+                    self._codex_acc["count"] += 1
+                except Exception:
+                    pass
                 # time.sleep(rank_ALL)
                 # logger.info(torch.sort(result))
                 # return
