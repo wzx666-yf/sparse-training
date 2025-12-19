@@ -1,4 +1,4 @@
-Ôªø# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 from __future__ import print_function
 import torch
 import numpy as np
@@ -501,234 +501,134 @@ class GaussianCompressor():
 
 class HggTopkCompressor():
     name = 'HggTopk'
-    # Speed knobs
-    fast_bins = True            # use direct formula for bin id instead of building full edges and bucketize
-    use_fp16_ops = False        # compute abs/log on fp16 where safe (disabled by default)
-    over_select = 1.05          # target select ~5% more, then trim; avoids expensive under-select fill
-    thr_reuse_tol = 0.02        # if previous threshold selects within 2% on sample, reuse threshold
-    steps = {}
-    warmup_steps = 5
-    warmup_enabled = True
+    # Large-model friendly knobs
     residuals = {}
-    prev_bin = {}
     prev_thr = {}
-    B = 1024
-    gamma = 1000.0
-    beta = 0.98
-    sample_ratio = 0.02
-    sample_min = 65536
+    steps = {}
+    # per-layer adaptive states
+    _stable_count = {}
+    _over_scale = {}
+    # defaults
+    sample_ratio = 0.001      # 0.1% sampling for threshold estimate
+    sample_min = 32768        # lower bound of sampled elements
+    over_select = 1.20        # select ~20% more then trim to k
+    thr_reuse_tol = 0.02      # 2% tolerance on sample for threshold reuse
+    max_dense_ratio = 0.20    # fallback to dense if ratio is large
+    refresh_interval = 4      # reuse previous threshold for 3 steps; sample on every 4th step
+    small_topk_threshold = 2_000_000  # for smaller tensors, direct topk is often faster
+    warmup_steps = 0          # disable heavy warmup by default
+    warmup_enabled = False
+
     @staticmethod
     def clear():
         HggTopkCompressor.residuals = {}
-        HggTopkCompressor.prev_bin = {}
         HggTopkCompressor.prev_thr = {}
         HggTopkCompressor.steps = {}
+        HggTopkCompressor._stable_count = {}
+        HggTopkCompressor._over_scale = {}
+
     @staticmethod
-    def _binary_search_suff(suff, k):
-        return int((suff >= k).sum().item()) - 1
-    @staticmethod
-    def _gallop_search_suff(suff, k, idx_prev):
-        B = suff.numel()
-        if idx_prev < 0 or idx_prev >= B:
-            return HggTopkCompressor._binary_search_suff(suff, k)
-        prevc = int(suff[idx_prev].item())
-        if prevc == k:
-            return idx_prev
-        direction = 1 if prevc > k else -1
-        step = 1
-        last = idx_prev
-        curr = idx_prev
-        while True:
-            curr = curr + direction * step
-            if curr < 0 or curr >= B:
-                curr = max(0, min(B - 1, curr))
-                break
-            c = int(suff[curr].item())
-            if (prevc >= k and c < k) or (prevc < k and c >= k):
-                break
-            last = curr
-            prevc = c
-            step *= 2
-        lo = min(last, curr)
-        hi = max(last, curr)
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            c = int(suff[mid].item())
-            if c >= k:
-                lo = mid + 1
-            else:
-                hi = mid - 1
-        return max(0, min(B - 1, hi))
+    def _get_over_scale(name):
+        s = HggTopkCompressor._over_scale.get(name, HggTopkCompressor.over_select)
+        if s < 1.0: s = 1.0
+        if s > 2.0: s = 2.0
+        HggTopkCompressor._over_scale[name] = s
+        return s
+
     @staticmethod
     def compress(tensor, name=None, ratio=0.05, **kwargs):
         with torch.no_grad():
             if name not in HggTopkCompressor.residuals:
                 HggTopkCompressor.residuals[name] = torch.zeros_like(tensor.data)
-            step = HggTopkCompressor.steps.get(name, 0) + 1
-            HggTopkCompressor.steps[name] = step
             t = tensor.data.add(HggTopkCompressor.residuals[name].data)
-            abs_t = torch.abs(t)
             numel = t.numel()
-            k = max(int(numel * ratio), 1)
-            max_abs = abs_t.max()
-            if max_abs.item() == 0.0:
-                idx = torch.arange(k, device=t.device, dtype=torch.long)
+            k = max(int(numel * float(ratio)), 1)
+
+            # Dense fallback when sparsity is low
+            if k >= int(numel * HggTopkCompressor.max_dense_ratio):
+                HggTopkCompressor.residuals[name].data.zero_()
+                return t, None
+
+            # Fast path for smaller tensors: direct topk is efficient on GPU
+            if numel <= HggTopkCompressor.small_topk_threshold:
+                vals, idx = torch.topk(torch.abs(t), k, sorted=False)
                 HggTopkCompressor.residuals[name].data = t + 0.0
                 HggTopkCompressor.residuals[name].data[idx] = 0.0
+                # store an approximate threshold for reuse bookkeeping
+                HggTopkCompressor.prev_thr[name] = float(vals.min().item())
                 return t, idx
-            B = HggTopkCompressor.B
-            gamma = HggTopkCompressor.gamma
-            L = torch.log1p(gamma * max_abs)
-            use_full = HggTopkCompressor.warmup_enabled and (step <= HggTopkCompressor.warmup_steps)
-            if use_full:
-                abs_s = abs_t
-                sample_n = numel
+
+            abs_t = torch.abs(t)
+
+            # Decide whether to sample this step
+            step = HggTopkCompressor.steps.get(name, 0) + 1
+            HggTopkCompressor.steps[name] = step
+            do_sample = (HggTopkCompressor.refresh_interval <= 1) or (step % HggTopkCompressor.refresh_interval == 0) or (name not in HggTopkCompressor.prev_thr)
+
+            thr = None
+            if not do_sample and name in HggTopkCompressor.prev_thr:
+                # reuse threshold without sampling
+                thr = float(HggTopkCompressor.prev_thr[name])
             else:
-                sr = HggTopkCompressor.sample_ratio
-                smin = HggTopkCompressor.sample_min
-                if numel > smin:
-                    sample_n = max(int(numel * sr), smin)
-                    sample_n = min(sample_n, numel)
+                # Sampling on large tensors
+                sample_n = min(numel, max(int(numel * HggTopkCompressor.sample_ratio), HggTopkCompressor.sample_min))
+                if sample_n < numel:
                     samp_idx = torch.randint(0, numel, (sample_n,), device=t.device)
                     abs_s = abs_t[samp_idx]
                 else:
-                    sample_n = numel
                     abs_s = abs_t
-            # Fast path: try reuse previous threshold on sample (skip histogram if close enough)
-            K_target = k
-            if HggTopkCompressor.over_select > 1.0:
-                K_target = min(numel, int(math.ceil(k * HggTopkCompressor.over_select)))
-            K_sample = K_target if use_full else max(1, int(round(K_target * (sample_n / float(numel)))))
-            eps = max(1, int(HggTopkCompressor.thr_reuse_tol * K_sample))
-            if (not use_full) and (name in HggTopkCompressor.prev_thr):
-                thr_prev = HggTopkCompressor.prev_thr[name]
-                cnt_prev = int((abs_s >= thr_prev).sum().item())
-                if abs(cnt_prev - K_sample) <= eps:
-                    T_final = float(thr_prev)
-                    mask = abs_t >= T_final
-                    sel_idx = mask.nonzero(as_tuple=False).view(-1)
-                    if sel_idx.numel() > k:
-                        vals = abs_t[sel_idx]
-                        _, loc = torch.topk(vals, k, sorted=False)
-                        sel_idx = sel_idx[loc]
-                    elif sel_idx.numel() < k:
-                        need = k - sel_idx.numel()
-                        rem = abs_t
-                        if sel_idx.numel() > 0:
-                            rem = rem.clone()
-                            rem.index_fill_(0, sel_idx, -1.0)
-                        _, extra = torch.topk(rem, need, sorted=False)
-                        sel_idx = torch.cat((sel_idx, extra))
-                    HggTopkCompressor.residuals[name].data = t + 0.0
-                    HggTopkCompressor.residuals[name].data[sel_idx] = 0.0
-                    # Update bin estimate from threshold
-                    invB = 1.0 / float(B)
-                    b_est = int(min(B-1, max(0, int((B * (torch.log1p(gamma * torch.tensor(T_final, device=t.device)) / L)).item()))))
-                    HggTopkCompressor.prev_bin[name] = int(b_est)
-                    HggTopkCompressor.prev_thr[name] = float(T_final)
-                    return t, sel_idx
-            # Build bins via direct formula (no full edges, no bucketize)
-            scale = (B / L)
-            bins = (torch.log1p(gamma * abs_s) * scale).to(torch.long)
-            bins = torch.clamp(bins, 0, B - 1)
-            try:
-                hist = torch.bincount(bins, minlength=B)
-            except Exception:
-                hist = torch.bincount(bins.cpu(), minlength=B).to(bins.device)
-            suff = torch.flip(torch.cumsum(torch.flip(hist, dims=[0]), dim=0), dims=[0])
-            eps = max(1, int(0.01 * K_sample))
-            if name in HggTopkCompressor.prev_bin:
-                idx_prev = HggTopkCompressor.prev_bin[name]
-                cnt_prev = int(suff[idx_prev].item())
-                if abs(cnt_prev - K_sample) <= eps:
-                    idx_crit = idx_prev
-                else:
-                    idx_crit = HggTopkCompressor._gallop_search_suff(suff, K_sample, idx_prev)
-            else:
-                idx_crit = HggTopkCompressor._binary_search_suff(suff, K_sample)
-            idx_crit = max(0, min(B - 1, idx_crit))
-            T_low = torch.expm1((float(idx_crit)/float(B)) * L) / gamma
-            T_high = torch.expm1((float(idx_crit+1)/float(B)) * L) / gamma if (idx_crit + 1) < B else T_low
-            width = torch.clamp(T_high - T_low, min=1e-12)
-            N_bin = int(hist[idx_crit].item())
-            suff_next = int(suff[idx_crit + 1].item()) if idx_crit + 1 < B else 0
-            K_remain = max(0, min(K_sample, K_sample - suff_next))
-            beta = HggTopkCompressor.beta
-            frac = 1.0 - (K_remain / max(1, N_bin))
-            T_final = (T_low + width * frac * beta).item()
-            mask = abs_t >= T_final
+                    sample_n = numel
+
+                # Target K with per-layer adaptive over-select, map to sample size
+                over = HggTopkCompressor._get_over_scale(name)
+                K_target = min(numel, int(math.ceil(k * over)))
+                K_sample = max(1, int(round(K_target * (sample_n / float(numel)))))
+
+                # Try to reuse previous threshold on sample
+                eps = max(1, int(HggTopkCompressor.thr_reuse_tol * K_sample))
+                reused = False
+                if name in HggTopkCompressor.prev_thr:
+                    thr_prev = float(HggTopkCompressor.prev_thr[name])
+                    cnt_prev = int((abs_s >= thr_prev).sum().item())
+                    if abs(cnt_prev - K_sample) <= eps:
+                        thr = thr_prev
+                        reused = True
+                        HggTopkCompressor._stable_count[name] = HggTopkCompressor._stable_count.get(name, 0) + 1
+                    else:
+                        HggTopkCompressor._stable_count[name] = 0
+                if thr is None:
+                    m = min(K_sample, abs_s.numel())
+                    vals, _ = torch.topk(abs_s, m, sorted=False)
+                    thr = float(vals.min().item())
+
+            # Apply threshold on full tensor; then trim/fill to exact k
+            mask = abs_t >= thr
             sel_idx = mask.nonzero(as_tuple=False).view(-1)
-            if sel_idx.numel() > k:
+            sel_before = sel_idx.numel()
+            if sel_before > k:
                 vals = abs_t[sel_idx]
                 _, loc = torch.topk(vals, k, sorted=False)
                 sel_idx = sel_idx[loc]
-            elif sel_idx.numel() < k:
-                need = k - sel_idx.numel()
+                # too many,ø…ƒ‹ΩµµÕ over-select
+                if sel_before > 4 * k:
+                    HggTopkCompressor._over_scale[name] = max(1.0, HggTopkCompressor._get_over_scale(name) * 0.95)
+            elif sel_before < k:
+                # rare path: fill remaining by topk on residual space
+                need = k - sel_before
                 rem = abs_t.clone()
-                if sel_idx.numel() > 0:
+                if sel_before > 0:
                     rem.index_fill_(0, sel_idx, -1.0)
                 _, extra = torch.topk(rem, need, sorted=False)
                 sel_idx = torch.cat((sel_idx, extra))
+                # increase over-select“‘ºı…Ÿœ¬¥Œ under-select
+                HggTopkCompressor._over_scale[name] = min(2.0, HggTopkCompressor._get_over_scale(name) * 1.10)
+
+            # Residual compensation
             HggTopkCompressor.residuals[name].data = t + 0.0
             HggTopkCompressor.residuals[name].data[sel_idx] = 0.0
-            HggTopkCompressor.prev_bin[name] = int(idx_crit)
-            HggTopkCompressor.prev_thr[name] = float(T_final)
+            HggTopkCompressor.prev_thr[name] = float(thr)
             return t, sel_idx
+
     @staticmethod
     def decompress(tensor, ctc, name=None):
         return tensor
-    name = 'topkA'
-
-
-class TopKACompressor2(TopKCompressor):
-    name = 'topkA2'
-
-
-class TopKSACompressor(TopKCompressor):
-    name = 'topkSA'
-
-
-class gTopKCompressor(TopKCompressor):
-    name = 'gtopk'
-
-
-class GaussianKCompressor(GaussianCompressor):
-    name = 'gaussiank'
-
-
-class GaussianKCCCompressor(GaussianCompressor):
-    name = 'gaussiankconcat'
-
-
-class GaussianKSACompressor(GaussianCompressor):
-    name = 'gaussiankSA'
-
-
-class OKTopKCompressor(GaussianCompressor):
-    name = 'oktopk'
-
-
-class TopKAoptCompressor(GaussianCompressor):
-    name = 'topkAopt'
-
-
-class SpardlCompressor(GaussianCompressor):
-    name = 'spardl'
-
-compressors = {
-    'HggTopk': HggTopkCompressor,
-    'hggtopk': HggTopkCompressor,
-    'topkA': TopKCompressor,
-    'topkAopt': TopKAoptCompressor,
-    'topkA2': TopKACompressor2,
-    'topkSA': TopKSACompressor,
-    'gtopk': gTopKCompressor,
-    'gaussiank': GaussianKCompressor,
-    'gaussiankconcat': GaussianKCCCompressor,
-    'gaussiankSA': GaussianKSACompressor,
-    'oktopk': OKTopKCompressor,
-    'spardl': SpardlCompressor,
-    'none': NoneCompressor
-}
-
-
