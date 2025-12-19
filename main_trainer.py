@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+ï»¿# -*- coding: utf-8 -*-
 from __future__ import print_function
 import time
 import torch
@@ -164,7 +164,7 @@ def robust_ssgd(dnn,
                     optimizer.get_current_density())
         optimizer.add_train_epoch()
         logger.info('Time per epoch including communication: %f, %f', time.time() - epoch_time - trainer.the_test_time, optimizer._allreducer.communication_time)
-        logger.info('[CODEX][CN] µÚ%dÂÖepochºÄÊ±(º¬Í¨ÐÅ): %.6f s, ÆäÖÐÍ¨ÐÅ: %.6f s', epoch, time.time() - epoch_time - trainer.the_test_time, optimizer._allreducer.communication_time)
+        logger.info('[CODEX][CN] \u7b2c%d\u8f6eepoch\u8017\u65f6(\u542b\u901a\u4fe1): %.6f s, \u5176\u4e2d\u901a\u4fe1: %.6f s', epoch, time.time() - epoch_time - trainer.the_test_time, optimizer._allreducer.communication_time)
         if settings.PROFILING_NORM:
             # For comparison purpose ===>
             fn = os.path.join(relative_path,
@@ -211,7 +211,7 @@ def robust_ssgd(dnn,
 
     if dopt.rank() == 0: logger.info("[CODEX] Total training time: %f s", time.time() - training_start)
 
-    if dopt.rank() == 0: logger.info('[CODEX][CN] ÑµÁ·×ÜÊ±³¤: %f s', time.time() - training_start)
+    if dopt.rank() == 0: logger.info('[CODEX][CN] \u8bad\u7ec3\u603b\u65f6\u957f: %f s', time.time() - training_start)
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="AllReduce trainer")
     parser.add_argument('--batch-size', type=int, default=32)
@@ -309,3 +309,6 @@ if __name__ == '__main__':
                 args.batch_size, args.nsteps_update, args.max_epochs,
                 args.compression, args.compressor, args.nwpernode,
                 args.sigma_scale, args.pretrain, args.density, prefix)
+
+
+
