@@ -172,7 +172,7 @@ def robust_ssgd(dnn,
         if rank == 0:
             try:
                 _comm_e, _comp_e, _sparse_e = optimizer._allreducer.codex_epoch_flush()
-                logger.info('[CODEX][CN] µÚ%dÂÖ: Í¨ÐÅ: %.6f s, Ñ¹Ëõ: %.6f s, Ï¡Êè: %.6f s', epoch, _comm_e, _comp_e, _sparse_e)
+                logger.info('[CODEX][CN] \\u7b2c%d\\u8f6e: \\u901a\\u4fe1: %.6f s, \\u538b\\u7f29: %.6f s, \\u7a00\\u758f: %.6f s', epoch, _comm_e, _comp_e, _sparse_e)
             except Exception:
                 pass
         logger.info('Time per epoch including communication: %f, %f', time.time() - epoch_time - trainer.the_test_time, optimizer._allreducer.communication_time)
