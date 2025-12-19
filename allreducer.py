@@ -1046,10 +1046,10 @@ class AllReducer():
                                  topk_indexes = out2.to(device=new_tensor.device, dtype=torch.long)
                                  selected_tensor = new_tensor[topk_indexes]
                              cp_time = time.time() - cstime
-                            try:
-                                self._codex_acc["compress"] += cp_time
-                            except Exception:
-                                pass
+                             try:
+                                 self._codex_acc["compress"] += cp_time
+                             except Exception:
+                                 pass
                              force_insert_item(self._compression_timers, new_name, cp_time)
                              force_insert_item(self._compression_timers2, new_name, cp_time)
                              # Ensure fixed k across ranks for sparse allreduce
