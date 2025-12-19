@@ -69,6 +69,7 @@ def robust_ssgd(dnn,
 
     trainer.set_train_epoch(comm.bcast(init_epoch))
     trainer.set_train_iter(comm.bcast(init_iter))
+    last_comm_time = 0.0
 
     def _error_handler(new_num_workers, new_rank):
         logger.info('Error info catched by trainer')
@@ -154,6 +155,11 @@ def robust_ssgd(dnn,
             trainer.update_model()
             times.append(time.time() - s)
             comp_times.append(trainer.comp_time)
+            try:
+                optimizer._allreducer._codex_acc['compute'] += trainer.comp_time
+                optimizer._allreducer._codex_acc['compute_count'] += 1
+            except Exception:
+                pass
             if i % display == 0 and i > 0 and rank == 0:
                 time_per_iter = np.mean(times)
                 comp_time_per_iter = np.mean(comp_times)
@@ -164,7 +170,7 @@ def robust_ssgd(dnn,
                     optimizer.get_current_density())
         optimizer.add_train_epoch()
         logger.info('Time per epoch including communication: %f, %f', time.time() - epoch_time - trainer.the_test_time, optimizer._allreducer.communication_time)
-        logger.info('[CODEX][CN] \u7b2c%d\u8f6eepoch\u8017\u65f6(\u542b\u901a\u4fe1): %.6f s, \u5176\u4e2d\u901a\u4fe1: %.6f s', epoch, time.time() - epoch_time - trainer.the_test_time, optimizer._allreducer.communication_time)
+        logger.info('[CODEX][CN] \\u7b2c%d\\u8f6eepoch\\u8017\\u65f6(\\u542b\\u901a\\u4fe1): %.6f s, \\u5176\\u4e2d\\u901a\\u4fe1: %.6f s', epoch, time.time() - epoch_time - trainer.the_test_time, optimizer._allreducer.communication_time - last_comm_time); last_comm_time = optimizer._allreducer.communication_time
         if settings.PROFILING_NORM:
             # For comparison purpose ===>
             fn = os.path.join(relative_path,
@@ -309,6 +315,8 @@ if __name__ == '__main__':
                 args.batch_size, args.nsteps_update, args.max_epochs,
                 args.compression, args.compressor, args.nwpernode,
                 args.sigma_scale, args.pretrain, args.density, prefix)
+
+
 
 
 

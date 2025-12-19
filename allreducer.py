@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from __future__ import print_function
 import heapq
 from typing import Dict, List, Tuple
@@ -327,7 +327,7 @@ class AllReducer():
 
         self._allreduce_timers2 = {}
         # Codex extra accumulators (do not modify original timers)
-        self._codex_acc = {"merge":0.0, "compress":0.0, "comm":0.0, "demerge":0.0, "d2h":0.0, "h2d":0.0, "count":0}
+        self._codex_acc = {"merge":0.0, "compress":0.0, "comm":0.0, "demerge":0.0, "d2h":0.0, "h2d":0.0, "compute":0.0, "compute_count":0, "count":0}
         self._compression_timers2 = {}
         self._merge_timers2 = {}
         self._demerge_timers2 = {}
@@ -827,7 +827,7 @@ class AllReducer():
             # CODEX summary (does not modify original timers)
             if self._codex_acc.get("count",0) > 0 and self.rank() == 0:
                 c = max(1, int(self._codex_acc["count"]))
-                logger.info("[CODEX][rank:%d] total_avg: merge=%f, compress=%f, comm=%f, demerge=%f, d2h=%f, h2d=%f", self.rank(), self._codex_acc["merge"]/c, self._codex_acc["compress"]/c, self._codex_acc["comm"]/c, self._codex_acc["demerge"]/c, self._codex_acc["d2h"]/c, self._codex_acc["h2d"]/c)
+                logger.info("[CODEX][rank:%d] total_avg: merge=%f, compress=%f, comm=%f, demerge=%f, d2h=%f, h2d=%f, compute=%f", self.rank(), self._codex_acc["merge"]/c, self._codex_acc["compress"]/c, self._codex_acc["comm"]/c, self._codex_acc["demerge"]/c, self._codex_acc["d2h"]/c, self._codex_acc["h2d"]/c, (self._codex_acc.get("compute",0.0)/max(1, int(self._codex_acc.get("compute_count",0)))))
                 self._codex_acc = {"merge":0.0, "compress":0.0, "comm":0.0, "demerge":0.0, "d2h":0.0, "h2d":0.0, "count":0}
                 mgs.pop(k, None)
 
@@ -1126,7 +1126,7 @@ class AllReducer():
                                 whole_value_rbuffers[self.chunck_size * i:])
                             all_size_rbuffers.append(np.array([0]))
 
-                    # 预分配结果张量，避免后续分支导致 result 未定�?
+                    # 棰勫垎閰嶇粨鏋滃紶閲忥紝閬垮厤鍚庣画鍒嗘敮瀵艰嚧 result 鏈畾锟?
                     result = torch.zeros((self.num_workers, self.chunck_size),
                                          dtype=torch.float32,
                                          device=device)
@@ -1377,7 +1377,7 @@ class AllReducer():
                     # if self.rank()==0:
                     #     logger.info(("sr time:", time.time()-sr_time))
 
-                    # ——————————————————allgather—————————————————�?
+                    # 鈥斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€攁llgather鈥斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€旓拷?
                     ag_time = time.time()
                     rank = rank_ALL % num_workers
                     rank_bias = rank_ALL - rank
