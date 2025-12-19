@@ -1,6 +1,4 @@
 # -*- coding: utf-8 -*-
-\n    if dopt.rank() == 0: logger.info('[CODEX][CN] 训练总时长: %f s', time.time() - training_start)
-    if dopt.rank() == 0: logger.info('[CODEX][CN] 训练总时长: %f s', time.time() - training_start)
 from __future__ import print_function
 import time
 import torch
