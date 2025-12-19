@@ -6,7 +6,7 @@ import time
 
 import math
 import utils
-from scipy import stats
+try:\n    from scipy import stats\nexcept Exception:\n    stats = None
 
 
 class NoneCompressor():
@@ -632,3 +632,51 @@ class HggTopkCompressor():
     @staticmethod
     def decompress(tensor, ctc, name=None):
         return tensor
+
+# --- Safety footer: ensure compressors dict is available ---
+
+class TopKACompressor(TopKCompressor):
+    name = 'topkA'
+
+class TopKACompressor2(TopKCompressor):
+    name = 'topkA2'
+
+class TopKSACompressor(TopKCompressor):
+    name = 'topkSA'
+
+class gTopKCompressor(TopKCompressor):
+    name = 'gtopk'
+
+class GaussianKCompressor(GaussianCompressor):
+    name = 'gaussiank'
+
+class GaussianKCCCompressor(GaussianCompressor):
+    name = 'gaussiankconcat'
+
+class GaussianKSACompressor(GaussianCompressor):
+    name = 'gaussiankSA'
+
+class OKTopKCompressor(GaussianCompressor):
+    name = 'oktopk'
+
+class TopKAoptCompressor(GaussianCompressor):
+    name = 'topkAopt'
+
+class SpardlCompressor(GaussianCompressor):
+    name = 'spardl'
+
+compressors = {
+    'HggTopk': HggTopkCompressor,
+    'hggtopk': HggTopkCompressor,
+    'topkA': TopKACompressor,
+    'topkAopt': TopKAoptCompressor,
+    'topkA2': TopKACompressor2,
+    'topkSA': TopKSACompressor,
+    'gtopk': gTopKCompressor,
+    'gaussiank': GaussianKCompressor,
+    'gaussiankconcat': GaussianKCCCompressor,
+    'gaussiankSA': GaussianKSACompressor,
+    'oktopk': OKTopKCompressor,
+    'spardl': SpardlCompressor,
+    'none': NoneCompressor,
+}
