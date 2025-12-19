@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 from __future__ import print_function
 import heapq
 from typing import Dict, List, Tuple
@@ -328,6 +328,7 @@ class AllReducer():
         self._allreduce_timers2 = {}
         # Codex extra accumulators (do not modify original timers)
         self._codex_acc = {"merge":0.0, "compress":0.0, "comm":0.0, "demerge":0.0, "d2h":0.0, "h2d":0.0, "compute":0.0, "compute_count":0, "count":0}
+        self._codex_epoch = {'comm': 0.0, 'compress': 0.0, 'sparse': 0.0}
         self._compression_timers2 = {}
         self._merge_timers2 = {}
         self._demerge_timers2 = {}
@@ -896,6 +897,10 @@ class AllReducer():
             force_insert_item(self._d2h_times, name, time.time() - stime)
         try:
             self._codex_acc["d2h"] += (time.time() - stime)
+            try:
+                self._codex_epoch['sparse'] += (time.time() - stime)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -921,6 +926,10 @@ class AllReducer():
                 dtype=np.float32)
         try:
             self._codex_acc["comm"] += (time.time() - t_comm)
+            try:
+                self._codex_epoch['comm'] += (time.time() - t_comm)
+            except Exception:
+                pass
         except Exception:
             pass
         r = torch.from_numpy(result)
@@ -957,6 +966,10 @@ class AllReducer():
             force_insert_item(self._h2d_times, name, time.time() - stime)
         try:
             self._codex_acc["h2d"] += (time.time() - stime)
+            try:
+                self._codex_epoch['sparse'] += (time.time() - stime)
+            except Exception:
+                pass
         except Exception:
             pass
         return tensor, included_indexes, full_mean
@@ -1004,6 +1017,10 @@ class AllReducer():
                                       time.time() - stime)
                 try:
                     self._codex_acc["merge"] += (time.time() - stime)
+                    try:
+                        self._codex_epoch['sparse'] += (time.time() - stime)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 
@@ -1034,6 +1051,10 @@ class AllReducer():
                              force_insert_item(self._compression_timers, new_name, cp_time)
                              try:
                                  self._codex_acc["compress"] += cp_time
+                                 try:
+                                     self._codex_epoch['compress'] += cp_time
+                                 except Exception:
+                                     pass
                              except Exception:
                                  pass
                              force_insert_item(self._compression_timers2, new_name, cp_time)
@@ -1048,6 +1069,10 @@ class AllReducer():
                              cp_time = time.time() - cstime
                              try:
                                  self._codex_acc["compress"] += cp_time
+                                 try:
+                                     self._codex_epoch['compress'] += cp_time
+                                 except Exception:
+                                     pass
                              except Exception:
                                  pass
                              force_insert_item(self._compression_timers, new_name, cp_time)
@@ -1126,7 +1151,7 @@ class AllReducer():
                                 whole_value_rbuffers[self.chunck_size * i:])
                             all_size_rbuffers.append(np.array([0]))
 
-                    # 棰勫垎閰嶇粨鏋滃紶閲忥紝閬垮厤鍚庣画鍒嗘敮瀵艰嚧 result 鏈畾锟?
+                    # 预分配结果张量，避免后续分支导致 result 未定�?
                     result = torch.zeros((self.num_workers, self.chunck_size),
                                          dtype=torch.float32,
                                          device=device)
@@ -1377,7 +1402,7 @@ class AllReducer():
                     # if self.rank()==0:
                     #     logger.info(("sr time:", time.time()-sr_time))
 
-                    # 鈥斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€攁llgather鈥斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€斺€旓拷?
+                    # ——————————————————allgather—————————————————�?
                     ag_time = time.time()
                     rank = rank_ALL % num_workers
                     rank_bias = rank_ALL - rank
@@ -1470,6 +1495,10 @@ class AllReducer():
                 self.communication_time += comm_time
                 try:
                     self._codex_acc["comm"] += comm_time
+                    try:
+                        self._codex_epoch['comm'] += comm_time
+                    except Exception:
+                        pass
                 except Exception:
                     pass
                 if self._profiling:
@@ -1486,6 +1515,10 @@ class AllReducer():
                                       time.time() - stime)
                     try:
                         self._codex_acc["demerge"] += (time.time() - stime)
+                        try:
+                            self._codex_epoch['sparse'] += (time.time() - stime)
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                     force_insert_item(self._demerge_timers2, new_name,
@@ -1511,6 +1544,19 @@ class AllReducer():
     def stop(self):
         self._running = False
 
+
+    def codex_epoch_flush(self):
+        """Return and reset epoch-level accumulators for communication/compression/sparse-overhead.
+        This is auxiliary profiling and does not affect original timers/logs.
+        """
+        try:
+            comm = float(self._codex_epoch.get('comm', 0.0))
+            comp = float(self._codex_epoch.get('compress', 0.0))
+            sparse = float(self._codex_epoch.get('sparse', 0.0))
+        except Exception:
+            comm, comp, sparse = 0.0, 0.0, 0.0
+        self._codex_epoch = {'comm': 0.0, 'compress': 0.0, 'sparse': 0.0}
+        return comm, comp, sparse
 
 def benchmark_gtopk_sparse_allreduce():
     logger.setLevel(logging.INFO)

@@ -1,4 +1,4 @@
-ï»¿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 from __future__ import print_function
 import time
 import torch
@@ -169,6 +169,12 @@ def robust_ssgd(dnn,
                     batch_size * nsteps_update / time_per_iter,
                     optimizer.get_current_density())
         optimizer.add_train_epoch()
+        if rank == 0:
+            try:
+                _comm_e, _comp_e, _sparse_e = optimizer._allreducer.codex_epoch_flush()
+                logger.info('[CODEX][CN] µÚ%dÂÖ: Í¨ÐÅ: %.6f s, Ñ¹Ëõ: %.6f s, Ï¡Êè: %.6f s', epoch, _comm_e, _comp_e, _sparse_e)
+            except Exception:
+                pass
         logger.info('Time per epoch including communication: %f, %f', time.time() - epoch_time - trainer.the_test_time, optimizer._allreducer.communication_time)
         logger.info('[CODEX][CN] \\u7b2c%d\\u8f6eepoch\\u8017\\u65f6(\\u542b\\u901a\\u4fe1): %.6f s, \\u5176\\u4e2d\\u901a\\u4fe1: %.6f s', epoch, time.time() - epoch_time - trainer.the_test_time, optimizer._allreducer.communication_time - last_comm_time); last_comm_time = optimizer._allreducer.communication_time
         if settings.PROFILING_NORM:
