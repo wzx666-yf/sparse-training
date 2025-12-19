@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+ï»¿# -*- coding: utf-8 -*-
 from __future__ import print_function
 import torch
 import numpy as np
@@ -6,7 +6,7 @@ import time
 
 import math
 import utils
-try:\n    from scipy import stats\nexcept Exception:\n    stats = None
+from scipy import stats
 
 
 class NoneCompressor():
@@ -609,7 +609,7 @@ class HggTopkCompressor():
                 vals = abs_t[sel_idx]
                 _, loc = torch.topk(vals, k, sorted=False)
                 sel_idx = sel_idx[loc]
-                # too many,¿ÉÄÜ½µµÍ over-select
+                # too many,ï¿½ï¿½ï¿½Ü½ï¿½ï¿½ï¿½ over-select
                 if sel_before > 4 * k:
                     HggTopkCompressor._over_scale[name] = max(1.0, HggTopkCompressor._get_over_scale(name) * 0.95)
             elif sel_before < k:
@@ -620,7 +620,7 @@ class HggTopkCompressor():
                     rem.index_fill_(0, sel_idx, -1.0)
                 _, extra = torch.topk(rem, need, sorted=False)
                 sel_idx = torch.cat((sel_idx, extra))
-                # increase over-selectÒÔ¼õÉÙÏÂ´Î under-select
+                # increase over-selectï¿½Ô¼ï¿½ï¿½ï¿½ï¿½Â´ï¿½ under-select
                 HggTopkCompressor._over_scale[name] = min(2.0, HggTopkCompressor._get_over_scale(name) * 1.10)
 
             # Residual compensation
@@ -632,8 +632,6 @@ class HggTopkCompressor():
     @staticmethod
     def decompress(tensor, ctc, name=None):
         return tensor
-
-# --- Safety footer: ensure compressors dict is available ---
 
 class TopKACompressor(TopKCompressor):
     name = 'topkA'
@@ -665,8 +663,10 @@ class TopKAoptCompressor(GaussianCompressor):
 class SpardlCompressor(GaussianCompressor):
     name = 'spardl'
 
+class HggTopkCompressor(HggTopkCompressor):
+    name = 'hggtopk'
+
 compressors = {
-    'HggTopk': HggTopkCompressor,
     'hggtopk': HggTopkCompressor,
     'topkA': TopKACompressor,
     'topkAopt': TopKAoptCompressor,
@@ -678,5 +678,5 @@ compressors = {
     'gaussiankSA': GaussianKSACompressor,
     'oktopk': OKTopKCompressor,
     'spardl': SpardlCompressor,
-    'none': NoneCompressor,
+    'none': NoneCompressor
 }
