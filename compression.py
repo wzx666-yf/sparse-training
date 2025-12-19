@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from __future__ import print_function
 import torch
 import numpy as np
@@ -501,6 +501,11 @@ class GaussianCompressor():
 
 class HggTopkCompressor():
     name = 'HggTopk'
+    # Speed knobs
+    fast_bins = True            # use direct formula for bin id instead of building full edges and bucketize
+    use_fp16_ops = False        # compute abs/log on fp16 where safe (disabled by default)
+    over_select = 1.05          # target select ~5% more, then trim; avoids expensive under-select fill
+    thr_reuse_tol = 0.02        # if previous threshold selects within 2% on sample, reuse threshold
     steps = {}
     warmup_steps = 5
     warmup_enabled = True
@@ -574,8 +579,6 @@ class HggTopkCompressor():
             B = HggTopkCompressor.B
             gamma = HggTopkCompressor.gamma
             L = torch.log1p(gamma * max_abs)
-            edges = torch.expm1(torch.linspace(0.0, 1.0, steps=B + 1, device=t.device) * L) / gamma
-            edges = torch.clamp(edges, min=0.0)
             use_full = HggTopkCompressor.warmup_enabled and (step <= HggTopkCompressor.warmup_steps)
             if use_full:
                 abs_s = abs_t
@@ -591,14 +594,48 @@ class HggTopkCompressor():
                 else:
                     sample_n = numel
                     abs_s = abs_t
-            bins = torch.bucketize(abs_s, edges[1:], right=False)
+            # Fast path: try reuse previous threshold on sample (skip histogram if close enough)
+            K_target = k
+            if HggTopkCompressor.over_select > 1.0:
+                K_target = min(numel, int(math.ceil(k * HggTopkCompressor.over_select)))
+            K_sample = K_target if use_full else max(1, int(round(K_target * (sample_n / float(numel)))))
+            eps = max(1, int(HggTopkCompressor.thr_reuse_tol * K_sample))
+            if (not use_full) and (name in HggTopkCompressor.prev_thr):
+                thr_prev = HggTopkCompressor.prev_thr[name]
+                cnt_prev = int((abs_s >= thr_prev).sum().item())
+                if abs(cnt_prev - K_sample) <= eps:
+                    T_final = float(thr_prev)
+                    mask = abs_t >= T_final
+                    sel_idx = mask.nonzero(as_tuple=False).view(-1)
+                    if sel_idx.numel() > k:
+                        vals = abs_t[sel_idx]
+                        _, loc = torch.topk(vals, k, sorted=False)
+                        sel_idx = sel_idx[loc]
+                    elif sel_idx.numel() < k:
+                        need = k - sel_idx.numel()
+                        rem = abs_t
+                        if sel_idx.numel() > 0:
+                            rem = rem.clone()
+                            rem.index_fill_(0, sel_idx, -1.0)
+                        _, extra = torch.topk(rem, need, sorted=False)
+                        sel_idx = torch.cat((sel_idx, extra))
+                    HggTopkCompressor.residuals[name].data = t + 0.0
+                    HggTopkCompressor.residuals[name].data[sel_idx] = 0.0
+                    # Update bin estimate from threshold
+                    invB = 1.0 / float(B)
+                    b_est = int(min(B-1, max(0, int((B * (torch.log1p(gamma * torch.tensor(T_final, device=t.device)) / L)).item()))))
+                    HggTopkCompressor.prev_bin[name] = int(b_est)
+                    HggTopkCompressor.prev_thr[name] = float(T_final)
+                    return t, sel_idx
+            # Build bins via direct formula (no full edges, no bucketize)
+            scale = (B / L)
+            bins = (torch.log1p(gamma * abs_s) * scale).to(torch.long)
             bins = torch.clamp(bins, 0, B - 1)
             try:
                 hist = torch.bincount(bins, minlength=B)
             except Exception:
                 hist = torch.bincount(bins.cpu(), minlength=B).to(bins.device)
             suff = torch.flip(torch.cumsum(torch.flip(hist, dims=[0]), dim=0), dims=[0])
-            K_sample = k if use_full else max(1, int(round(k * (sample_n / float(numel)))))
             eps = max(1, int(0.01 * K_sample))
             if name in HggTopkCompressor.prev_bin:
                 idx_prev = HggTopkCompressor.prev_bin[name]
@@ -610,8 +647,8 @@ class HggTopkCompressor():
             else:
                 idx_crit = HggTopkCompressor._binary_search_suff(suff, K_sample)
             idx_crit = max(0, min(B - 1, idx_crit))
-            T_low = edges[idx_crit]
-            T_high = edges[idx_crit + 1] if idx_crit + 1 < edges.numel() else edges[idx_crit]
+            T_low = torch.expm1((float(idx_crit)/float(B)) * L) / gamma
+            T_high = torch.expm1((float(idx_crit+1)/float(B)) * L) / gamma if (idx_crit + 1) < B else T_low
             width = torch.clamp(T_high - T_low, min=1e-12)
             N_bin = int(hist[idx_crit].item())
             suff_next = int(suff[idx_crit + 1].item()) if idx_crit + 1 < B else 0
@@ -693,4 +730,5 @@ compressors = {
     'spardl': SpardlCompressor,
     'none': NoneCompressor
 }
+
 
