@@ -18,10 +18,8 @@ from dl_trainer import DLTrainer, _support_datasets, _support_dnns
 from compression import compressors
 
 from settings import logger, formatter
-#import horovod.torch as hvd
 from tensorboardX import SummaryWriter
 
-# torch.manual_seed(0)
 writer = None
 relative_path = None
 
@@ -41,7 +39,7 @@ def robust_ssgd(dnn,
                 pretrain=None,
                 density=0.01,
                 prefix=None):
-    global relative_path
+    global relative_path, args
 
     torch.cuda.set_device(dopt.rank() % nwpernode)
     rank = dopt.rank()
@@ -60,7 +58,7 @@ def robust_ssgd(dnn,
                         dnn=dnn,
                         lr=lr,
                         nworkers=nworkers,
-                        prefix=prefix + '-ds%s' % str(density),
+                        prefix=(prefix + '-ds%s' % str(density)) if prefix else None,
                         pretrain=pretrain,
                         tb_writer=writer)
 
@@ -69,49 +67,39 @@ def robust_ssgd(dnn,
 
     trainer.set_train_epoch(comm.bcast(init_epoch))
     trainer.set_train_iter(comm.bcast(init_iter))
-    last_comm_time = 0.0
 
     def _error_handler(new_num_workers, new_rank):
         logger.info('Error info catched by trainer')
         trainer.update_nworker(new_num_workers, new_rank)
 
-    compressor = compressor if compression else 'none'
-    compressor = compressors[compressor]
+    comp_name = compressor if compression else 'none'
+    comp_cls = compressors[comp_name]
     # Set HggTopk params if selected
-    if compressor.name == 'HggTopk':
-        compressor.B = args.hggtopk_bins
-        compressor.gamma = args.hggtopk_gamma
-        compressor.beta = args.hggtopk_beta
-        logger.info('HggTopk params: B=%d, gamma=%.3f, beta=%.3f', compressor.B, compressor.gamma, compressor.beta)
-        compressor.sample_ratio = args.hggtopk_sample_ratio
-        compressor.sample_min = args.hggtopk_sample_min
-        logger.info('HggTopk sampling: ratio=%.4f, min=%d', compressor.sample_ratio, compressor.sample_min)
+    if getattr(comp_cls, 'name', '') == 'HggTopk':
+        try:
+            comp_cls.B = getattr(args, 'hggtopk_bins', getattr(comp_cls, 'B', 1024))
+            comp_cls.gamma = getattr(args, 'hggtopk_gamma', getattr(comp_cls, 'gamma', 1000.0))
+            comp_cls.beta = getattr(args, 'hggtopk_beta', getattr(comp_cls, 'beta', 0.98))
+            comp_cls.sample_ratio = getattr(args, 'hggtopk_sample_ratio', getattr(comp_cls, 'sample_ratio', 0.02))
+            comp_cls.sample_min = getattr(args, 'hggtopk_sample_min', getattr(comp_cls, 'sample_min', 65536))
+            comp_cls.warmup_steps = getattr(args, 'hggtopk_warmup_steps', getattr(comp_cls, 'warmup_steps', 0))
+            comp_cls.warmup_enabled = (comp_cls.warmup_steps > 0)
+            logger.info('HggTopk params: B=%s, gamma=%s, beta=%s, sample_ratio=%s, sample_min=%s, warmup_steps=%s, warmup_enabled=%s',
+                        str(comp_cls.B), str(comp_cls.gamma), str(comp_cls.beta), str(comp_cls.sample_ratio), str(comp_cls.sample_min), str(comp_cls.warmup_steps), str(comp_cls.warmup_enabled))
+        except Exception:
+            pass
 
-        compressor.warmup_steps = args.hggtopk_warmup_steps
-        compressor.warmup_enabled = (args.hggtopk_warmup_steps > 0)
-        logger.info('HggTopk warmup: steps=%d, enabled=%s', compressor.warmup_steps, str(compressor.warmup_enabled))
     logger.info('Broadcast parameters....')
-    #print("rank: ", rank, "before bcast model_state: ", trainer.net.state_dict())
     model_state = comm.bcast(trainer.net.state_dict(), root=0)
-    #print("rank: ", rank, "model_state: ", model_state)
     trainer.net.load_state_dict(model_state)
     comm.Barrier()
-    #while True:
-    #    try:
-    #        x = next(trainer.net.parameters()).is_cuda
-    #        print("rank: ", rank, "is cuda ", x)
-    #    except StopIteration:
-    #        break
-    #import horovod.torch as hvd
-    #hvd.init()
-    #hvd.broadcast_parameters(trainer.net.state_dict(), root_rank=0)
     logger.info('Broadcast parameters finished....')
 
     norm_clip = None
     is_sparse = compression
     optimizer = dopt.DistributedOptimizer(trainer.optimizer,
                                           trainer.net.named_parameters(),
-                                          compression=compressor,
+                                          compression=comp_cls,
                                           is_sparse=is_sparse,
                                           err_handler=_error_handler,
                                           layerwise_times=None,
@@ -122,207 +110,128 @@ def robust_ssgd(dnn,
 
     trainer.update_optimizer(optimizer)
 
-    iters_per_epoch = trainer.get_num_of_training_samples() // (
-        nworkers * batch_size * nsteps_update)
+    iters_per_epoch = max(1, trainer.get_num_of_training_samples() // (nworkers * batch_size * nsteps_update))
 
-    times = []
-    comp_times = []
-    NUM_OF_DISLAY = 20
-    display = NUM_OF_DISLAY if iters_per_epoch > NUM_OF_DISLAY else iters_per_epoch - 1
     logger.info('Start training ....')
     training_start = time.time()
     for epoch in range(max_epochs):
         epoch_time = time.time()
         trainer.the_test_time = 0
         hidden = None
+        epoch_compute_acc = 0.0
+        epoch_compress_acc = 0.0
+        epoch_comm_acc = 0.0
+        epoch_loss_acc = 0.0
+        acc_start_idx = len(getattr(trainer, 'train_acc_top1', []))
         if dnn == 'lstm':
             hidden = trainer.net.init_hidden()
+
         for i in range(iters_per_epoch):
-            s = time.time()
             optimizer.zero_grad()
+            iter_compute_start = time.time()
             for j in range(nsteps_update):
-                if j < nsteps_update - 1 and nsteps_update > 1:
-                    optimizer.local = True
-                else:
-                    optimizer.local = False
+                optimizer.local = (j < nsteps_update - 1 and nsteps_update > 1)
                 if dnn == 'lstm':
                     _, hidden = trainer.train(1, hidden=hidden)
                 else:
                     trainer.train(1)
-            if dnn == 'lstm':
-                optimizer.synchronize()
-                torch.nn.utils.clip_grad_norm_(trainer.net.parameters(), 0.25)
+            iter_compute_sum = time.time() - iter_compute_start
             trainer.update_model()
-            times.append(time.time() - s)
-            comp_times.append(trainer.comp_time)
-            try:
-                optimizer._allreducer._codex_acc['compute'] += trainer.comp_time
-                optimizer._allreducer._codex_acc['compute_count'] += 1
-            except Exception:
-                pass
-            if i % display == 0 and i > 0 and rank == 0:
-                time_per_iter = np.mean(times)
-                comp_time_per_iter = np.mean(comp_times)
-                logger.info(
-                    'Time per iteration including communication: %f. computation: %f. Speed: %f images/s, current density: %f',
-                    time_per_iter, comp_time_per_iter,
-                    batch_size * nsteps_update / time_per_iter,
-                    optimizer.get_current_density())
+
+            iter_stats = getattr(optimizer._allreducer, '_last_iter_stats', {'comm': 0.0, 'compress': 0.0, 'sparse': 0.0})
+            if dopt.rank() == 0:
+                logger.info('[CODEX][ITER] compute: %.6f s, compress: %.6f s, comm: %.6f s',
+                            iter_compute_sum, float(iter_stats.get('compress', 0.0)), float(iter_stats.get('comm', 0.0)))
+            epoch_compute_acc += iter_compute_sum
+            epoch_compress_acc += float(iter_stats.get('compress', 0.0))
+            epoch_comm_acc += float(iter_stats.get('comm', 0.0))
+            epoch_loss_acc += float(getattr(trainer, 'loss', 0.0))
+
         optimizer.add_train_epoch()
-        if rank == 0:
-            try:
-                _comm_e, _comp_e, _sparse_e = optimizer._allreducer.codex_epoch_flush()
-                logger.info('[CODEX][CN] \\u7b2c%d\\u8f6e: \\u901a\\u4fe1: %.6f s, \\u538b\\u7f29: %.6f s, \\u7a00\\u758f: %.6f s', epoch, _comm_e, _comp_e, _sparse_e)
-            except Exception:
-                pass
-        logger.info('Time per epoch including communication: %f, %f', time.time() - epoch_time - trainer.the_test_time, optimizer._allreducer.communication_time)
-        logger.info('[CODEX][CN] \\u7b2c%d\\u8f6eepoch\\u8017\\u65f6(\\u542b\\u901a\\u4fe1): %.6f s, \\u5176\\u4e2d\\u901a\\u4fe1: %.6f s', epoch, time.time() - epoch_time - trainer.the_test_time, optimizer._allreducer.communication_time - last_comm_time); last_comm_time = optimizer._allreducer.communication_time
-        if settings.PROFILING_NORM:
-            # For comparison purpose ===>
-            fn = os.path.join(relative_path,
-                              'gtopknorm-rank%d-epoch%d.npy' % (rank, epoch))
-            fn2 = os.path.join(relative_path,
-                               'randknorm-rank%d-epoch%d.npy' % (rank, epoch))
-            fn3 = os.path.join(relative_path,
-                               'upbound-rank%d-epoch%d.npy' % (rank, epoch))
-            fn5 = os.path.join(relative_path,
-                               'densestd-rank%d-epoch%d.npy' % (rank, epoch))
-            arr = []
-            arr2 = []
-            arr3 = []
-            arr4 = []
-            arr5 = []
-            for gtopk_norm, randk_norm, upbound, xnorm, dense_std in optimizer._allreducer._profiling_norms:
-                arr.append(gtopk_norm)
-                arr2.append(randk_norm)
-                arr3.append(upbound)
-                arr4.append(xnorm)
-                arr5.append(dense_std)
-            arr = np.array(arr)
-            arr2 = np.array(arr2)
-            arr3 = np.array(arr3)
-            arr4 = np.array(arr4)
-            arr5 = np.array(arr5)
-            logger.info('[rank:%d][%d] gtopk norm mean: %f, std: %f', rank,
-                        epoch, np.mean(arr), np.std(arr))
-            logger.info('[rank:%d][%d] randk norm mean: %f, std: %f', rank,
-                        epoch, np.mean(arr2), np.std(arr2))
-            logger.info('[rank:%d][%d] upbound norm mean: %f, std: %f', rank,
-                        epoch, np.mean(arr3), np.std(arr3))
-            logger.info('[rank:%d][%d] x norm mean: %f, std: %f', rank, epoch,
-                        np.mean(arr4), np.std(arr4))
-            logger.info('[rank:%d][%d] dense std mean: %f, std: %f', rank,
-                        epoch, np.mean(arr5), np.std(arr5))
-            np.save(fn, arr)
-            np.save(fn2, arr2)
-            np.save(fn3, arr3)
-            np.save(fn5, arr5)
-            # For comparison purpose <=== End
+        epoch_dur = time.time() - epoch_time - trainer.the_test_time
+        total_so_far = time.time() - training_start
+        acc_end_idx = len(getattr(trainer, 'train_acc_top1', []))
+        acc_vals = getattr(trainer, 'train_acc_top1', [])[acc_start_idx:acc_end_idx] if acc_end_idx > acc_start_idx else []
+        acc_avg = float(np.mean(acc_vals)) if len(acc_vals) > 0 else float('nan')
+        iters_cnt = iters_per_epoch
+        loss_avg = (epoch_loss_acc / float(max(1, iters_cnt * nsteps_update)))
+        if dopt.rank() == 0:
+            logger.info('[CODEX][EPOCH %d] compute: %.6f s, compress: %.6f s, comm: %.6f s, loss(avg): %.6f, acc(avg): %s',
+                        epoch, epoch_compute_acc, epoch_compress_acc, epoch_comm_acc, loss_avg,
+                        ('%.3f' % acc_avg if not np.isnan(acc_avg) else 'N/A'))
+            logger.info('[CODEX][TIME] epoch: %.6f s, total: %.6f s', epoch_dur, total_so_far)
+
+        # clear any profiling buffers (kept for compatibility)
         optimizer._allreducer._profiling_norms = []
+
     optimizer.stop()
 
-    if dopt.rank() == 0: logger.info("[CODEX] Total training time: %f s", time.time() - training_start)
+    if dopt.rank() == 0:
+        logger.info('[CODEX] Total training time: %f s', time.time() - training_start)
 
-    if dopt.rank() == 0: logger.info('[CODEX][CN] \u8bad\u7ec3\u603b\u65f6\u957f: %f s', time.time() - training_start)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="AllReduce trainer")
     parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--nsteps-update', type=int, default=1)
-    parser.add_argument(
-        '--nworkers',
-        type=int,
-        default=1,
-        help='Just for experiments, and it cannot be used in production')
-    parser.add_argument('--nwpernode',
-                        type=int,
-                        default=1,
+    parser.add_argument('--nworkers', type=int, default=1,
+                        help='Just for experiments, and it cannot be used in production')
+    parser.add_argument('--nwpernode', type=int, default=1,
                         help='Number of workers per node')
-    parser.add_argument('--compression',
-                        dest='compression',
-                        action='store_true')
-    parser.add_argument(
-        '--compressor',
-        type=str,
-        default='topk',
-        choices=compressors.keys(),
-        help='Specify the compressors if \'compression\' is open')
+    parser.add_argument('--compression', dest='compression', action='store_true')
+    parser.add_argument('--compressor', type=str, default='topk', choices=compressors.keys(),
+                        help="Specify the compressor if 'compression' is on")
+    # HggTopk knobs (will be used if compressor is HggTopk)
     parser.add_argument('--hggtopk-bins', type=int, default=1024,
-                            help='HggTopk: number of log bins (default: 1024)')
+                        help='HggTopk: number of log bins (for legacy variant)')
     parser.add_argument('--hggtopk-gamma', type=float, default=1000.0,
-                            help='HggTopk: log mapping gamma (default: 1000.0)')
+                        help='HggTopk: log mapping gamma (for legacy variant)')
     parser.add_argument('--hggtopk-beta', type=float, default=0.98,
-                            help='HggTopk: conservative interpolation factor (default: 0.98)')
+                        help='HggTopk: conservative interpolation factor (for legacy variant)')
     parser.add_argument('--hggtopk-sample-ratio', type=float, default=0.02,
-                        help='HggTopk: sampling ratio for histogram (default: 0.02)')
+                        help='HggTopk: sampling ratio')
     parser.add_argument('--hggtopk-sample-min', type=int, default=65536,
-                        help='HggTopk: min sample size for histogram (default: 65536)')
-    parser.add_argument('--hggtopk-warmup-steps', type=int, default=5,
-                        help='HggTopk: use full histogram for first N steps (0 to disable)')
-    parser.add_argument('--sigma-scale',
-                        type=float,
-                        default=2.5,
+                        help='HggTopk: min sample size')
+    parser.add_argument('--hggtopk-warmup-steps', type=int, default=0,
+                        help='HggTopk: warmup steps (0=disable)')
+
+    parser.add_argument('--sigma-scale', type=float, default=2.5,
                         help='Maximum sigma scaler for sparsification')
-    parser.add_argument('--density',
-                        type=float,
-                        default=0.01,
+    parser.add_argument('--density', type=float, default=0.01,
                         help='Density for sparsification')
-    parser.add_argument('--dataset',
-                        type=str,
-                        default='imagenet',
-                        choices=_support_datasets,
+    parser.add_argument('--dataset', type=str, default='imagenet', choices=_support_datasets,
                         help='Specify the dataset for training')
-    parser.add_argument('--dnn',
-                        type=str,
-                        default='resnet50',
-                        choices=_support_dnns,
+    parser.add_argument('--dnn', type=str, default='resnet50', choices=_support_dnns,
                         help='Specify the neural network for training')
-    parser.add_argument('--data-dir',
-                        type=str,
-                        default='./data',
+    parser.add_argument('--data-dir', type=str, default='./data',
                         help='Specify the data root path')
-    parser.add_argument('--lr',
-                        type=float,
-                        default=0.1,
-                        help='Default learning rate')
-    parser.add_argument('--max-epochs',
-                        type=int,
-                        default=90,
-                        help='Default maximum epochs to train')
-    parser.add_argument('--pretrain',
-                        type=str,
-                        default=None,
-                        help='Specify the pretrain path')
+    parser.add_argument('--lr', type=float, default=0.1, help='Default learning rate')
+    parser.add_argument('--max-epochs', type=int, default=90, help='Default maximum epochs to train')
+    parser.add_argument('--pretrain', type=str, default=None, help='Specify the pretrain path')
     parser.set_defaults(compression=False)
+
     args = parser.parse_args()
+
     batch_size = args.batch_size * args.nsteps_update
-    prefix = settings.PREFIX
+    prefix = settings.PREFIX if hasattr(settings, 'PREFIX') else 'run'
     if args.compression:
         prefix = 'comp-' + args.compressor + '-' + prefix
     logdir = 'allreduce-%s/%s-n%d-bs%d-lr%.4f-ns%d-sg%.2f-ds%s' % (
-        prefix, args.dnn, args.nworkers, batch_size, args.lr,
-        args.nsteps_update, args.sigma_scale, str(args.density))
+        prefix, args.dnn, args.nworkers, batch_size, args.lr, args.nsteps_update, args.sigma_scale, str(args.density))
     relative_path = './log/%s' % logdir
     utils.create_path(relative_path)
-    rank = 0
     rank = dopt.rank()
     if rank == 0:
         tb_runs = './runs/%s' % logdir
         writer = SummaryWriter(tb_runs)
-    logfile = os.path.join(
-        relative_path,
-        settings.hostname + '-' + str(rank) + '-seed1-nointer.log')
+    logfile = os.path.join(relative_path, settings.hostname + '-' + str(rank) + '-seed1-nointer.log')
     hdlr = logging.FileHandler(logfile)
     hdlr.setFormatter(formatter)
     logger.addHandler(hdlr)
     logger.info('Configurations: %s', args)
-
     logger.info('Interpreter: %s', sys.version)
+
     robust_ssgd(args.dnn, args.dataset, args.data_dir, args.nworkers, args.lr,
                 args.batch_size, args.nsteps_update, args.max_epochs,
                 args.compression, args.compressor, args.nwpernode,
                 args.sigma_scale, args.pretrain, args.density, prefix)
-
-
-
-
-

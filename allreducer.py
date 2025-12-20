@@ -247,7 +247,7 @@ class AllReducer():
         self._device = torch.device(
             "cuda:0" if torch.cuda.is_available() else "cpu")
         self._writer = writer
-        self._profiling = True
+        self._profiling = False
         self._entries = {}
         self._keys = []
         self._outputs = {}
@@ -329,6 +329,8 @@ class AllReducer():
         # Codex extra accumulators (do not modify original timers)
         self._codex_acc = {"merge":0.0, "compress":0.0, "comm":0.0, "demerge":0.0, "d2h":0.0, "h2d":0.0, "compute":0.0, "compute_count":0, "count":0}
         self._codex_epoch = {'comm': 0.0, 'compress': 0.0, 'sparse': 0.0}
+        self._codex_iter = {'comm': 0.0, 'compress': 0.0, 'sparse': 0.0}
+        self._last_iter_stats = {'comm': 0.0, 'compress': 0.0, 'sparse': 0.0}
         self._compression_timers2 = {}
         self._merge_timers2 = {}
         self._demerge_timers2 = {}
@@ -844,7 +846,7 @@ class AllReducer():
 
     def reset(self):
         self._for_reductions = self._default_for_reductions.copy()
-        self._print_profiling()
+        # self._print_profiling()  # disabled by CODEX
 
     def add_tensor(self, name, tensor):
         if name in self._entries:
@@ -898,6 +900,10 @@ class AllReducer():
         try:
             self._codex_acc["d2h"] += (time.time() - stime)
             try:
+                self._codex_iter['sparse'] += (time.time() - stime)
+            except Exception:
+                pass
+            try:
                 self._codex_epoch['sparse'] += (time.time() - stime)
             except Exception:
                 pass
@@ -926,6 +932,10 @@ class AllReducer():
                 dtype=np.float32)
         try:
             self._codex_acc["comm"] += (time.time() - t_comm)
+            try:
+                self._codex_iter['comm'] += (time.time() - t_comm)
+            except Exception:
+                pass
             try:
                 self._codex_epoch['comm'] += (time.time() - t_comm)
             except Exception:
@@ -966,6 +976,10 @@ class AllReducer():
             force_insert_item(self._h2d_times, name, time.time() - stime)
         try:
             self._codex_acc["h2d"] += (time.time() - stime)
+            try:
+                self._codex_iter['sparse'] += (time.time() - stime)
+            except Exception:
+                pass
             try:
                 self._codex_epoch['sparse'] += (time.time() - stime)
             except Exception:
@@ -1018,6 +1032,10 @@ class AllReducer():
                 try:
                     self._codex_acc["merge"] += (time.time() - stime)
                     try:
+                        self._codex_iter['sparse'] += (time.time() - stime)
+                    except Exception:
+                        pass
+                    try:
                         self._codex_epoch['sparse'] += (time.time() - stime)
                     except Exception:
                         pass
@@ -1052,6 +1070,10 @@ class AllReducer():
                              try:
                                  self._codex_acc["compress"] += cp_time
                                  try:
+                                     self._codex_iter['compress'] += cp_time
+                                 except Exception:
+                                     pass
+                                 try:
                                      self._codex_epoch['compress'] += cp_time
                                  except Exception:
                                      pass
@@ -1069,6 +1091,10 @@ class AllReducer():
                              cp_time = time.time() - cstime
                              try:
                                  self._codex_acc["compress"] += cp_time
+                                 try:
+                                     self._codex_iter['compress'] += cp_time
+                                 except Exception:
+                                     pass
                                  try:
                                      self._codex_epoch['compress'] += cp_time
                                  except Exception:
@@ -1496,6 +1522,10 @@ class AllReducer():
                 try:
                     self._codex_acc["comm"] += comm_time
                     try:
+                        self._codex_iter['comm'] += comm_time
+                    except Exception:
+                        pass
+                    try:
                         self._codex_epoch['comm'] += comm_time
                     except Exception:
                         pass
@@ -1515,6 +1545,10 @@ class AllReducer():
                                       time.time() - stime)
                     try:
                         self._codex_acc["demerge"] += (time.time() - stime)
+                        try:
+                            self._codex_iter['sparse'] += (time.time() - stime)
+                        except Exception:
+                            pass
                         try:
                             self._codex_epoch['sparse'] += (time.time() - stime)
                         except Exception:
@@ -1539,6 +1573,10 @@ class AllReducer():
             if len(self._for_reductions) == 0:
                 self.reset()
                 torch.cuda.synchronize()
+                # Save iteration stats for outer thread
+                self._last_iter_stats = dict(self._codex_iter)
+                # Reset iter accumulator
+                self._codex_iter = {'comm': 0.0, 'compress': 0.0, 'sparse': 0.0}
                 self._msg_queue2.put('DONE')
 
     def stop(self):
