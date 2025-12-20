@@ -46,10 +46,10 @@ def list_rotate(l, n):
 
 
 def topk_sparse_allreduce(comm,
-                          sparse_tensor,
-                          storage,
-                          indexes=None,
-                          dtype=np.float32):
+                        sparse_tensor,
+                        storage,
+                        indexes=None,
+                        dtype=np.float32):
     tensor = sparse_tensor
     if indexes is None:
         k = int(tensor.size * 0.01)
@@ -93,10 +93,10 @@ def topk(tensor, k):
 
 
 def gtopk_sparse_allreduce(comm,
-                           sparse_tensor,
-                           storage=None,
-                           indexes=None,
-                           dtype=np.float32):
+                        sparse_tensor,
+                        storage=None,
+                        indexes=None,
+                        dtype=np.float32):
     """
     0: 0(0) <- 1(1), 2(2) <- 3(3), 4(4) <- 5(5), 6(6) <- 7(7)
     1: 0(0) <- 2(1), 4(2) <- 6(3)
@@ -161,9 +161,9 @@ def gtopk_sparse_allreduce(comm,
                 first_array_indexes = tmp_topki[tmp_topki < k]
                 second_array_indexes = tmp_topki[tmp_topki >= k] - k
                 indexes = np.concatenate((indexes[first_array_indexes],
-                                          tmp_indexes[second_array_indexes]))
+                                        tmp_indexes[second_array_indexes]))
                 values = np.concatenate((values[first_array_indexes],
-                                         tmp_values[second_array_indexes]))
+                                        tmp_values[second_array_indexes]))
 
                 send_values = np.concatenate((indexes, values))
                 send_values[0:k] = indexes.astype(np.uint32)
@@ -171,7 +171,7 @@ def gtopk_sparse_allreduce(comm,
             else:
                 target = participate_ranks[local_rank - 1]
                 logger.debug('[round:%d], %d(%d)->%d(%d)', i, rank, local_rank,
-                             target, local_rank - 1)
+                            target, local_rank - 1)
                 comm.Send([send_values, MPI.FLOAT], dest=target)
                 #reqs = comm.Isend([send_values, MPI.FLOAT], dest=target)
                 #reqs.Wait()
@@ -345,7 +345,7 @@ class AllReducer():
         self.num_workers = self.size() // self.Group_num
         # self._spar_local_threshold = [{} for j in range(self.num_workers)]
         self._spar_local_threshold = torch.empty(self.num_workers,
-                                                 device=self._device)
+                                                device=self._device)
         self._spar_global_threshold = [[
             {} for j in range(self.num_workers)
         ] for i in range(math.ceil(math.log2(self.num_workers)))]
@@ -604,8 +604,8 @@ class AllReducer():
             left_num = -left_num
             size, g_id = group_heap.pop(0)
             left_num, pos = append_slice(g_id, left_num,
-                                         min(left_num, group_max_size - size),
-                                         pos, name)
+                                        min(left_num, group_max_size - size),
+                                        pos, name)
             if left_num > 0:
                 layer_heap.insert(0, (-left_num, name, pos))
             if group_size[g_id] < group_max_size:
@@ -635,7 +635,7 @@ class AllReducer():
         #     self._topk_numel[k][0] += 1
         #     self._topk_numel[k][1] = max(numel, self._topk_numel[k][1])
         self._topk_counter: Dict[int,
-                                 int] = dict.fromkeys(self._topk_num.keys(), 0)
+                                int] = dict.fromkeys(self._topk_num.keys(), 0)
         self._topk_buffer: Dict[int, torch.Tensor] = {
             k: torch.zeros(
                 (min(self._topk_num[k], self._topk_gap), self._topk_size[k]),
@@ -730,7 +730,7 @@ class AllReducer():
         numel = tensor.data.numel()
         # logger.info((name, self._merged_parameters[new_key], numel, offset, tensor))
         self._merged_parameters[new_key].data[offset:offset +
-                                              numel] = tensor.view(numel).data
+                                            numel] = tensor.view(numel).data
         self._groups_flags[group_idx][layer_idx] = 1
         try:
             idx = self._groups_flags[group_idx].index(0)
@@ -754,8 +754,8 @@ class AllReducer():
             original_tensor = self._named_parameters[k]
             numel = original_tensor.numel()
             tensor = torch.zeros(numel,
-                                 device=original_tensor.device,
-                                 dtype=original_tensor.dtype)
+                                device=original_tensor.device,
+                                dtype=original_tensor.dtype)
             tensor.data = merged_tensor.data[offset:offset + numel]
             tensors[k] = tensor.view(original_tensor.shape)
         return tensors
@@ -884,11 +884,11 @@ class AllReducer():
         self._sparse_storages_topk[name] = {}
 
     def _sparse_allreduce(self,
-                          name,
-                          tensor,
-                          selected_tensor,
-                          original_shape,
-                          topk_indexes=None):
+                        name,
+                        tensor,
+                        selected_tensor,
+                        original_shape,
+                        topk_indexes=None):
         stime = time.time()
         ct = selected_tensor
         if ct.is_cuda:  # only transfer the selected k values through PCI-e
@@ -1028,7 +1028,7 @@ class AllReducer():
                 new_name, new_tensor = self._push_to_buffer(name, tensor)
                 if self._profiling:
                     force_insert_item(self._merge_timers, new_name,
-                                      time.time() - stime)
+                                    time.time() - stime)
                 try:
                     self._codex_acc["merge"] += (time.time() - stime)
                     try:
@@ -1053,83 +1053,90 @@ class AllReducer():
                 stime = time.time()
                 # Ensure non-Spardl paths also produce a merged result tensor
                 if not (self._sparse and self._compression.name == 'spardl'):
-                     if self._sparse:
-                         # Use the selected compressor to compute sparse indices/values and time it
-                         cstime = time.time()
-                         try:
-                             out1, out2 = self._compression.compress(new_tensor, name=new_name, ratio=self._density)
-                         except TypeError:
-                             out1, out2 = None, None
-                         topk_indexes = None
-                         selected_tensor = None
-                         if out2 is None:
-                             # Compressor indicates dense or no selection
-                             result = self._dense_allreduce(new_name, new_tensor)
-                             cp_time = time.time() - cstime
-                             force_insert_item(self._compression_timers, new_name, cp_time)
-                             try:
-                                 self._codex_acc["compress"] += cp_time
-                                 try:
-                                     self._codex_iter['compress'] += cp_time
-                                 except Exception:
-                                     pass
-                                 try:
-                                     self._codex_epoch['compress'] += cp_time
-                                 except Exception:
-                                     pass
-                             except Exception:
-                                 pass
-                             force_insert_item(self._compression_timers2, new_name, cp_time)
-                         else:
-                             # Determine whether compressor returned (indexes, values) or (tensor, indexes)
-                             if isinstance(out1, torch.Tensor) and out1.dtype in (torch.int32, torch.int64):
-                                 topk_indexes = out1.to(device=new_tensor.device, dtype=torch.long)
-                                 selected_tensor = out2.to(device=new_tensor.device)
-                             else:
-                                 topk_indexes = out2.to(device=new_tensor.device, dtype=torch.long)
-                                 selected_tensor = new_tensor[topk_indexes]
-                             cp_time = time.time() - cstime
-                             try:
-                                 self._codex_acc["compress"] += cp_time
-                                 try:
-                                     self._codex_iter['compress'] += cp_time
-                                 except Exception:
-                                     pass
-                                 try:
-                                     self._codex_epoch['compress'] += cp_time
-                                 except Exception:
-                                     pass
-                             except Exception:
-                                 pass
-                             force_insert_item(self._compression_timers, new_name, cp_time)
-                             force_insert_item(self._compression_timers2, new_name, cp_time)
-                             # Ensure fixed k across ranks for sparse allreduce
-                             k_target = max(1, int(new_tensor.numel() * self._density))
-                             if topk_indexes is not None and topk_indexes.numel() != k_target:
-                                  if topk_indexes.numel() > k_target:
-                                      _vals = selected_tensor.abs()
-                                      _, _loc = torch.topk(_vals, k_target, sorted=False)
-                                      topk_indexes = topk_indexes[_loc]
-                                      selected_tensor = selected_tensor[_loc]
-                                  else:
-                                      need = k_target - topk_indexes.numel()
-                                      rem = new_tensor.abs().clone()
-                                      rem[topk_indexes] = 0
-                                      _, extra_idx = torch.topk(rem, need, sorted=False)
-                                      topk_indexes = torch.cat((topk_indexes, extra_idx.to(dtype=topk_indexes.dtype, device=topk_indexes.device)))
-                                      selected_tensor = new_tensor[topk_indexes]
-                             # Allreduce sparse selection; reconstruct a dense merged vector
-                             stime2 = time.time()
-                             result, _, _ = self._sparse_allreduce(new_name,
-                                                                           new_tensor,
-                                                                           selected_tensor,
-                                                                           new_tensor.shape,
-                                                                           topk_indexes)
-                             force_insert_item(self._allreduce_timers, new_name, time.time() - stime2)
-                             force_insert_item(self._allreduce_timers2, new_name, time.time() - stime2)
-                     else:
-                         # Dense fallback
-                         result = self._dense_allreduce(new_name, new_tensor)
+                    if self._sparse:
+                        # Use the selected compressor to compute sparse indices/values and time it
+                        if new_tensor.is_cuda: torch.cuda.synchronize()
+
+                        cstime = time.time()
+
+                        try:
+                            out1, out2 = self._compression.compress(new_tensor, name=new_name, ratio=self._density)
+                        except TypeError:
+                            out1, out2 = None, None
+                        topk_indexes = None
+                        selected_tensor = None
+                        if out2 is None:
+                            # Compressor indicates dense or no selection
+                            result = self._dense_allreduce(new_name, new_tensor)
+                            if new_tensor.is_cuda:
+                                torch.cuda.synchronize()
+                            cp_time = time.time() - cstime
+                            force_insert_item(self._compression_timers, new_name, cp_time)
+                            try:
+                                self._codex_acc["compress"] += cp_time
+                                try:
+                                    self._codex_iter['compress'] += cp_time
+                                except Exception:
+                                    pass
+                                try:
+                                    self._codex_epoch['compress'] += cp_time
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+                            force_insert_item(self._compression_timers2, new_name, cp_time)
+                        else:
+                            # Determine whether compressor returned (indexes, values) or (tensor, indexes)
+                            if isinstance(out1, torch.Tensor) and out1.dtype in (torch.int32, torch.int64):
+                                topk_indexes = out1.to(device=new_tensor.device, dtype=torch.long)
+                                selected_tensor = out2.to(device=new_tensor.device)
+                            else:
+                                topk_indexes = out2.to(device=new_tensor.device, dtype=torch.long)
+                                selected_tensor = new_tensor[topk_indexes]
+                                if new_tensor.is_cuda:
+                                    torch.cuda.synchronize()
+                                cp_time = time.time() - cstime
+                            try:
+                                self._codex_acc["compress"] += cp_time
+                                try:
+                                    self._codex_iter['compress'] += cp_time
+                                except Exception:
+                                    pass
+                                try:
+                                    self._codex_epoch['compress'] += cp_time
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+                            force_insert_item(self._compression_timers, new_name, cp_time)
+                            force_insert_item(self._compression_timers2, new_name, cp_time)
+                            # Ensure fixed k across ranks for sparse allreduce
+                            k_target = max(1, int(new_tensor.numel() * self._density))
+                            if topk_indexes is not None and topk_indexes.numel() != k_target:
+                                if topk_indexes.numel() > k_target:
+                                    _vals = selected_tensor.abs()
+                                    _, _loc = torch.topk(_vals, k_target, sorted=False)
+                                    topk_indexes = topk_indexes[_loc]
+                                    selected_tensor = selected_tensor[_loc]
+                                else:
+                                    need = k_target - topk_indexes.numel()
+                                    rem = new_tensor.abs().clone()
+                                    rem[topk_indexes] = 0
+                                    _, extra_idx = torch.topk(rem, need, sorted=False)
+                                    topk_indexes = torch.cat((topk_indexes, extra_idx.to(dtype=topk_indexes.dtype, device=topk_indexes.device)))
+                                    selected_tensor = new_tensor[topk_indexes]
+                            # Allreduce sparse selection; reconstruct a dense merged vector
+                            stime2 = time.time()
+                            result, _, _ = self._sparse_allreduce(new_name,
+                                                                        new_tensor,
+                                                                        selected_tensor,
+                                                                        new_tensor.shape,
+                                                                        topk_indexes)
+                            force_insert_item(self._allreduce_timers, new_name, time.time() - stime2)
+                            force_insert_item(self._allreduce_timers2, new_name, time.time() - stime2)
+                    else:
+                        # Dense fallback
+                        result = self._dense_allreduce(new_name, new_tensor)
                 if self._sparse and self._compression.name == 'spardl':
                     num_workers = self.num_workers
                     density = self._density
@@ -1137,11 +1144,11 @@ class AllReducer():
                     split_tensors: torch.Tensor = torch.cat(
                         (new_tensor,
                          torch.zeros(self.chunck_size * num_workers -
-                                     new_tensor.numel(),
-                                     device=device))).view(num_workers, -1)
+                                    new_tensor.numel(),
+                                    device=device))).view(num_workers, -1)
                     k = int(self.chunck_size * density)
                     force_insert_item(self._merge_timers2, new_name,
-                                      time.time() - t)
+                                    time.time() - t)
                     # t = time_log(t, 'group', rank_ALL)
                     cstime = time.time()
                     if self._local_residual is not None:
@@ -1164,11 +1171,11 @@ class AllReducer():
                             all_index_rbuffers.append(
                                 whole_index_rbuffers[self.chunck_size *
                                                      i:self.chunck_size *
-                                                     (i + 1)])
+                                                    (i + 1)])
                             all_value_rbuffers.append(
                                 whole_value_rbuffers[self.chunck_size *
                                                      i:self.chunck_size *
-                                                     (i + 1)])
+                                                    (i + 1)])
                             all_size_rbuffers.append(np.array([0]))
                         else:
                             all_index_rbuffers.append(
@@ -1177,22 +1184,21 @@ class AllReducer():
                                 whole_value_rbuffers[self.chunck_size * i:])
                             all_size_rbuffers.append(np.array([0]))
 
-                    # 预分配结果张量，避免后续分支导致 result 未定�?
                     result = torch.zeros((self.num_workers, self.chunck_size),
-                                         dtype=torch.float32,
-                                         device=device)
+                                        dtype=torch.float32,
+                                        device=device)
 
                     cstime = time.time()
                     g_id = self.all_send_blocks[0] if len(
                         self.all_send_blocks) else 0
                     if num_workers == 1:
                         _, g_indexes = torch.topk(split_tensors[g_id].abs(),
-                                                  self.h,
-                                                  sorted=False)
+                                                self.h,
+                                                sorted=False)
                     else:
                         _, g_indexes = torch.topk(split_tensors[g_id].abs(),
-                                                  k,
-                                                  sorted=False)
+                                                k,
+                                                sorted=False)
                     thres = _.min()
                     self._spar_local_threshold[g_id] = thres
                     send_index_buffer = g_indexes.view(-1)
@@ -1223,23 +1229,23 @@ class AllReducer():
                                 all_index_sbuffers[self.all_send_blocks[i]],
                                 MPI.INT
                             ],
-                                       dest=self.all_dest[i],
-                                       tag=1))
+                                    dest=self.all_dest[i],
+                                    tag=1))
                         reqs.append(
                             comm.Irecv([all_index_rbuffers[i], MPI.INT],
-                                       source=self.all_source[i],
-                                       tag=1))
+                                    source=self.all_source[i],
+                                    tag=1))
                         reqs.append(
                             comm.Isend([
                                 all_value_sbuffers[self.all_send_blocks[i]],
                                 MPI.FLOAT
                             ],
-                                       dest=self.all_dest[i],
-                                       tag=2))
+                                    dest=self.all_dest[i],
+                                    tag=2))
                         reqs.append(
                             comm.Irecv([all_value_rbuffers[i], MPI.FLOAT],
-                                       source=self.all_source[i],
-                                       tag=2))
+                                    source=self.all_source[i],
+                                    tag=2))
                         reqs.append(
                             comm.Isend([
                                 np.array([
@@ -1247,17 +1253,17 @@ class AllReducer():
                                         self.all_send_blocks[i]].size
                                 ]).astype(np.int32), MPI.INT
                             ],
-                                       dest=self.all_dest[i],
-                                       tag=3))
+                                    dest=self.all_dest[i],
+                                    tag=3))
                         reqs.append(
                             comm.Irecv([all_size_rbuffers[i], MPI.INT],
-                                       source=self.all_source[i],
-                                       tag=3))
+                                    source=self.all_source[i],
+                                    tag=3))
                         # logger.info(('sr once: ', time.time()-sr_one_time, ' time: ', i))
                         MPI.Request.Waitall(reqs)
 
                         if self.Group_num == 1 or (self.Group_num > 1
-                                                   and i < self.sr_round):
+                                                and i < self.sr_round):
                             size = int(all_size_rbuffers[i])
                             rindex = all_index_rbuffers[i][:size]
                             rvalue = all_value_rbuffers[i][:size]
@@ -1425,6 +1431,18 @@ class AllReducer():
                                       compress_t1 + compress_t2)
                     force_insert_item(self._compression_timers, new_name,
                                       compress_t1 + compress_t2)
+                    try:
+                        self._codex_acc['compress'] += (compress_t1 + compress_t2)
+                        try:
+                            self._codex_iter['compress'] += (compress_t1 + compress_t2)
+                        except Exception:
+                            pass
+                        try:
+                            self._codex_epoch['compress'] += (compress_t1 + compress_t2)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
                     # if self.rank()==0:
                     #     logger.info(("sr time:", time.time()-sr_time))
 
@@ -1492,8 +1510,8 @@ class AllReducer():
                         MPI.Request.Waitall(reqs)
 
                     result = torch.zeros((self.num_workers, self.chunck_size),
-                                         dtype=torch.float32,
-                                         device=device)
+                                        dtype=torch.float32,
+                                        device=device)
                     for i in range(num_workers):
                         # send_size = int(all_rbuffers[i][0])
                         # size = send_size // 2
@@ -1533,16 +1551,16 @@ class AllReducer():
                     pass
                 if self._profiling:
                     force_insert_item(self._allreduce_timers, new_name,
-                                      time.time() - stime)
+                                    time.time() - stime)
                     force_insert_item(self._allreduce_timers2, new_name,
-                                      time.time() - stime)
+                                    time.time() - stime)
 
                 # Decouple on the merged gradients
                 stime = time.time()
                 tensors = self._pull_from_buffer(new_name, result.view(-1))
                 if self._profiling:
                     force_insert_item(self._demerge_timers, new_name,
-                                      time.time() - stime)
+                                    time.time() - stime)
                     try:
                         self._codex_acc["demerge"] += (time.time() - stime)
                         try:
@@ -1556,7 +1574,7 @@ class AllReducer():
                     except Exception:
                         pass
                     force_insert_item(self._demerge_timers2, new_name,
-                                      time.time() - stime)
+                                    time.time() - stime)
                 for n in tensors:
                     self._outputs[n] = tensors[n]
                     self._entries.pop(n, None)
@@ -1619,9 +1637,9 @@ def benchmark_gtopk_sparse_allreduce():
     stime = time.time()
     for i in range(iteration):
         t, _ = gtopk_sparse_allreduce(comm,
-                                      tensor,
-                                      storage=storage,
-                                      indexes=indexes)
+                                    tensor,
+                                    storage=storage,
+                                    indexes=indexes)
     total_time = time.time() - stime
     logger.info('average time: %f', total_time / iteration)
 

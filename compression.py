@@ -78,8 +78,8 @@ class TopKCompressor():
             tensor.data.add_(TopKCompressor.residuals[name].data)
 
             values, indexes = torch.topk(torch.abs(tensor.data),
-                                         k=k,
-                                         sorted=False)
+                                        k=k,
+                                        sorted=False)
 
             TopKCompressor.residuals[name].data = tensor.data + 0.0
             TopKCompressor.residuals[name].data[indexes] = 0.0
@@ -122,7 +122,7 @@ class TopKCompressor():
 
             threshold = float(values[values.numel() - 1].item())
             print("global topk elements: ", torch.numel(values), "threshold: ",
-                  threshold)
+                threshold)
             return threshold
 
     @staticmethod
@@ -579,12 +579,12 @@ class HggTopkCompressor():
                     abs_s = abs_t
                     sample_n = numel
 
-                # Target K with per-layer adaptive over-select, map to sample size
+
                 over = HggTopkCompressor._get_over_scale(name)
                 K_target = min(numel, int(math.ceil(k * over)))
                 K_sample = max(1, int(round(K_target * (sample_n / float(numel)))))
 
-                # Try to reuse previous threshold on sample
+
                 eps = max(1, int(HggTopkCompressor.thr_reuse_tol * K_sample))
                 reused = False
                 if name in HggTopkCompressor.prev_thr:
@@ -601,7 +601,7 @@ class HggTopkCompressor():
                     vals, _ = torch.topk(abs_s, m, sorted=False)
                     thr = float(vals.min().item())
 
-            # Apply threshold on full tensor; then trim/fill to exact k
+
             mask = abs_t >= thr
             sel_idx = mask.nonzero(as_tuple=False).view(-1)
             sel_before = sel_idx.numel()
@@ -609,18 +609,18 @@ class HggTopkCompressor():
                 vals = abs_t[sel_idx]
                 _, loc = torch.topk(vals, k, sorted=False)
                 sel_idx = sel_idx[loc]
-                # too many,���ܽ��� over-select
+
                 if sel_before > 4 * k:
                     HggTopkCompressor._over_scale[name] = max(1.0, HggTopkCompressor._get_over_scale(name) * 0.95)
             elif sel_before < k:
-                # rare path: fill remaining by topk on residual space
+
                 need = k - sel_before
                 rem = abs_t.clone()
                 if sel_before > 0:
                     rem.index_fill_(0, sel_idx, -1.0)
                 _, extra = torch.topk(rem, need, sorted=False)
                 sel_idx = torch.cat((sel_idx, extra))
-                # increase over-select�Լ����´� under-select
+
                 HggTopkCompressor._over_scale[name] = min(2.0, HggTopkCompressor._get_over_scale(name) * 1.10)
 
             # Residual compensation
@@ -663,11 +663,10 @@ class TopKAoptCompressor(GaussianCompressor):
 class SpardlCompressor(GaussianCompressor):
     name = 'spardl'
 
-class HggTopkCompressor(HggTopkCompressor):
-    name = 'hggtopk'
 
 compressors = {
     'hggtopk': HggTopkCompressor,
+    'HggTopk': HggTopkCompressor,
     'topkA': TopKACompressor,
     'topkAopt': TopKAoptCompressor,
     'topkA2': TopKACompressor2,
@@ -680,3 +679,4 @@ compressors = {
     'spardl': SpardlCompressor,
     'none': NoneCompressor
 }
+
