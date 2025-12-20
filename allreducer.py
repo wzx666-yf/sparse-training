@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from __future__ import print_function
 import heapq
 from typing import Dict, List, Tuple
-
 import numpy as np
 import time
 import torch
@@ -13,38 +12,25 @@ from mpi4py import MPI
 from settings import logger
 import sys
 import math
-
-
 class MESSAGE:
     STOP = 'STOP'
     RUNNING = 'RUNNING'
-
-
 mpi_float16 = MPI.BYTE.Create_contiguous(2).Commit()
 MPI._typedict['e'] = mpi_float16
 MPI_TYPES = {np.float32: MPI.FLOAT, np.float16: mpi_float16}
-
 # THRESHOLD = 640 * 1024 * 1024
 THRESHOLD = float('inf')
-
-
 def topk_threshold(tensor: torch.Tensor, k: int):
     result = tensor.topk(k, sorted=False)
     return result.values.min(), result.indices
-
-
 def time_log(t, s, rank):
     if rank == 0:
         logger.info('%s, %f', str(s), time.time() - t)
     return time.time()
-
-
 # right rotate for a positive n
 # left rotate for a negative n
 def list_rotate(l, n):
     return l[-n:] + l[:-n]
-
-
 def topk_sparse_allreduce(comm,
                         sparse_tensor,
                         storage,
@@ -59,7 +45,6 @@ def topk_sparse_allreduce(comm,
             indexes = indexes.cpu().numpy().astype(np.uint32)
         k = len(indexes)
         values = tensor  #[indexes]
-
     num_workers = comm.size
     if storage is not None and 'values_1d' in storage:
         values_1d = storage['values_1d']
@@ -72,26 +57,18 @@ def topk_sparse_allreduce(comm,
         storage['values_1d'] = values_1d
         storage['indexes_1d'] = indexes_1d
         storage['result'] = result
-
     if dtype != np.float32:
         values_1d = values_1d.astype(dtype)
-
     result.fill(0)
-
     if len(indexes) == 0:
         return result, None
-
     nnz = k
     comm.Allgather(values, values_1d[:num_workers * nnz])
     comm.Allgather(indexes, indexes_1d[:num_workers * nnz])
     return values_1d, indexes_1d, None  #result, None
-
-
 def topk(tensor, k):
     indexes = np.abs(tensor).argsort()[-k:][::-1]
     return indexes, tensor[indexes]
-
-
 def gtopk_sparse_allreduce(comm,
                         sparse_tensor,
                         storage=None,
@@ -107,7 +84,6 @@ def gtopk_sparse_allreduce(comm,
     """
     num_workers = comm.size
     rank = comm.rank
-
     tensor = sparse_tensor
     if indexes is None:
         k = int(tensor.size * 0.001)
@@ -132,7 +108,6 @@ def gtopk_sparse_allreduce(comm,
         recv_values = np.zeros_like(send_values)
         if storage:
             storage['result_v2'] = recv_values
-
     num_round = int(np.log2(num_workers))
     local_rank = rank
     exist_workers = num_workers
@@ -148,14 +123,12 @@ def gtopk_sparse_allreduce(comm,
                 #reqr.Wait()
                 tmp_indexes = recv_values[0:k].astype(np.int32)
                 tmp_values = recv_values[k:2 * k]
-
                 cv, c1, c2 = np.intersect1d(indexes,
                                             tmp_indexes,
                                             assume_unique=False,
                                             return_indices=True)
                 values[c1] += tmp_values[c2]
                 tmp_values[c2] = 0.0
-
                 tmp_c = np.concatenate((values, tmp_values))
                 tmp_topki, tmp_topkv = utils.topk(tmp_c, k)
                 first_array_indexes = tmp_topki[tmp_topki < k]
@@ -164,7 +137,6 @@ def gtopk_sparse_allreduce(comm,
                                         tmp_indexes[second_array_indexes]))
                 values = np.concatenate((values[first_array_indexes],
                                         tmp_values[second_array_indexes]))
-
                 send_values = np.concatenate((indexes, values))
                 send_values[0:k] = indexes.astype(np.uint32)
                 send_values[k:2 * k] = values.astype(np.float32)
@@ -179,7 +151,6 @@ def gtopk_sparse_allreduce(comm,
         step *= 2
         participate_ranks = range(0, num_workers, step)
         comm.Barrier()
-
     if rank == 0:
         send_values = np.concatenate((indexes, values))
         indexes = indexes.astype(np.uint32)
@@ -195,37 +166,27 @@ def gtopk_sparse_allreduce(comm,
         tmp_values = send_values[k:2 * k].astype(np.float32)
         values = tmp_values
         indexes = tmp_indexes
-
     cv, c1, c2 = np.intersect1d(original_indexes,
                                 indexes,
                                 assume_unique=False,
                                 return_indices=True)
     included_indexes = c1
     return values, indexes, included_indexes  # final selected values and indexes
-
-
 def dense_allreduce(comm, tensor):
     result = np.zeros_like(tensor)
     op = MPI.SUM
     comm.Allreduce(tensor, result, op)
     comm.Barrier()
     return result
-
-
 def _default_err_callback(new_num_workers, new_rank):
     logger.error(
         'Some process error accurs, number of workers changes to %d, my rank changes to %d',
         new_num_workers, new_rank)
-
-
 def force_insert_item(d, key, val):
     if key not in d:
         d[key] = []
     d[key].append(val)
-
-
 class AllReducer():
-
     def __init__(self,
                  named_parameters,
                  lock,
@@ -271,7 +232,6 @@ class AllReducer():
         self._global_topk_dict = {}
         self._warmup_limit = 0
         self.communication_time = 0
-
         logger.info('density: %f', self._density)
         logger.info('threshold scale: %f', self._scale)
         self._comm = MPI.COMM_WORLD
@@ -294,29 +254,24 @@ class AllReducer():
         self._sequential_keys = [
             k for k, v in _named_parameters if v.requires_grad
         ]
-
         self._lock = lock
         self._key_lock = key_lock
         self._compression = compression
         self._err_callback = err_callback if err_callback else _default_err_callback
         self._norm_clip = norm_clip
-
         self._allreduce_counter = 0
         self._local_threshold = {}
         self._global_threshold = {}
         self._boundaries = {}
         self._region_offsets = {}
-
         dsts = list(range(self._comm.size))
         srcs = dsts[::-1]
         dsts = list_rotate(dsts, -self._comm.rank)
         srcs = list_rotate(srcs, self._comm.rank + 1)
         self._dsts = dsts
         self._srcs = srcs
-
         self._generate_merged_parameters()
         self.allocate_sparse_storages()
-
         self._allreduce_timers = {}
         self._compression_timers = {}
         self._merge_timers = {}
@@ -324,7 +279,6 @@ class AllReducer():
         self._h2d_times = {}
         self._d2h_times = {}
         self._profiling_norms = []
-
         self._allreduce_timers2 = {}
         # Codex extra accumulators (do not modify original timers)
         self._codex_acc = {"merge":0.0, "compress":0.0, "comm":0.0, "demerge":0.0, "d2h":0.0, "h2d":0.0, "compute":0.0, "compute_count":0, "count":0}
@@ -334,7 +288,6 @@ class AllReducer():
         self._compression_timers2 = {}
         self._merge_timers2 = {}
         self._demerge_timers2 = {}
-
         #self._dynamic_densities = [0.25, 0.16, 0.1, 0.05, 0.05, 0.05, 0.025]
         self._dynamic_densities = []  # the tuned one
         if self._dynamic_densities is not None:
@@ -373,13 +326,11 @@ class AllReducer():
         self.allgather_rsize_buffers = [
             np.zeros(1, dtype=np.int32) for i in range(self.num_workers)
         ]
-
     def timing(self, s: str, begin: bool):
         if begin:
             self.timers[s] = self.timers.get(s, 0.) - time.time()
         else:
             self.timers[s] = self.timers.get(s, 0.) + time.time()
-
     def _generate_groups_with_threshold(self, threshold):
         sizes = [
             self._named_parameters[k].data.numel()
@@ -407,7 +358,6 @@ class AllReducer():
         if len(group) > 0:
             groups.append(group)
         return groups, key_groupidx_maps
-
     def init_send_info(self):
         Group_num = self.Group_num
         num_workers_ALL = self.size()
@@ -418,7 +368,6 @@ class AllReducer():
         Group_offset = self.Group_offset
         rank = rank_ALL - Group_offset
         self.Group_rank = self.rank() // self.num_workers
-
         nRounds = math.ceil(math.log2(num_workers))
         extra_size = num_workers - 2**(nRounds - 1)
         size_list = []
@@ -428,16 +377,13 @@ class AllReducer():
         if extra_size > 0:
             size_list.append(int(extra_size))
         size_list = size_list[::-1]
-
         # group_num = math.gcd(size_list[0], num_workers)  # group_num is m
         # items = int(num_workers // group_num)
         # intra_rank = rank % items  # sr_rank is w
         # group_rank = items * (rank // items)
         # inter_nRounds = math.ceil(math.log2(group_num))
         # intra_nRounds = nRounds - inter_nRounds
-
         # logger.info((rank_ALL, group_num, items, intra_rank, group_rank))
-
         dest_list = []
         source_list = []
         send_start_list = []
@@ -456,7 +402,6 @@ class AllReducer():
             gap //= 2
         # logger.info((gap, group_num))
         # assert gap == group_num // 2
-
         rec_dest_list = []
         rec_source_list = []
         rec_send_start_list = []
@@ -482,14 +427,12 @@ class AllReducer():
         #         rec_pointer += size_list[intra_nRounds + i]
         #     rec_gap //= 2
         # assert rec_gap == 0
-
         dest_list += rec_dest_list
         source_list += rec_source_list
         send_start_list += rec_send_start_list
         send_end_list += rec_send_end_list
         recv_start_list += rec_recv_start_list
         recv_end_list += rec_recv_end_list
-
         self.dest_list = dest_list
         self.source_list = source_list
         self.send_start_list = send_start_list
@@ -498,7 +441,6 @@ class AllReducer():
         self.recv_end_list = recv_end_list
         self.last_list = [i for i in range(num_workers)]
         # logger.info((rank_ALL, dest_list, source_list, send_start_list, send_end_list, recv_start_list, recv_end_list))
-
         self.all_send_blocks = []
         self.all_recv_blocks = []
         self.all_dest = []
@@ -526,7 +468,6 @@ class AllReducer():
                 self.all_recv_blocks.append(recv_range0[_])
                 self.all_dest.append(dest)
                 self.all_source.append(source)
-
         # # sag
         self.sr_round = len(self.all_send_blocks)
         # self.sag_round = math.ceil(math.log2(self.Group_num))
@@ -557,7 +498,6 @@ class AllReducer():
         # # self._comm.Barrier()
         # # time.sleep(self.rank())
         # # logger.info((self.rank(), self.last_list[self.rank()], self.all_dest, self.all_send_blocks))
-
     def _generate_arange_groups(self):
         n = self.num_workers
         param_nums = {
@@ -568,7 +508,6 @@ class AllReducer():
         self.data_size = tot
         group_max_size = math.ceil(tot / n)
         # group_max_size = tot
-
         layer_heap = []  # (-left_num, name, pos)
         group_heap = []  # (size, g_id)
         tmp = []
@@ -581,9 +520,7 @@ class AllReducer():
         groups = [{} for i in range(n)]
         group_size = np.zeros(n, np.int32)
         key_groupidx_maps: Dict[str, List[int]] = {}
-
         # self._merged_parameters[list(self._merged_parameters)[0]] = torch.empty((self.num_workers, group_max_size), device=self._device)
-
         def append_slice(group_id, left_num, append_num, pos, name):
             nonlocal groups, group_size, key_groupidx_maps
             groups[group_id][name] = (
@@ -598,7 +535,6 @@ class AllReducer():
             left_num -= append_num
             pos += append_num
             return left_num, pos
-
         while len(layer_heap) > 0:
             left_num, name, pos = layer_heap.pop(0)
             left_num = -left_num
@@ -623,7 +559,6 @@ class AllReducer():
         self.h_inertia = False
         self.chunck_topk_num = self.chunck_size
         self._named_numel = param_nums
-
         self._topk_gap = 10000
         self._topk_num: Dict[int, int] = {}
         self._topk_size: Dict[int, int] = {}
@@ -654,7 +589,6 @@ class AllReducer():
         logger.info('spar_groups: %s', groups)
         logger.info('spar_key_groupidx_maps: %s', key_groupidx_maps)
         return
-
     def _generate_merged_parameters(self):
         self._merged_parameters = {}
         groups, key_groupidx_maps = self._generate_groups_with_threshold(
@@ -683,7 +617,6 @@ class AllReducer():
             self._global_threshold[new_key] = 0.0
             self._boundaries[new_key] = self._comm.size * [0]
             self._region_offsets[new_key] = self._comm.size * [0]
-
         self._groups = groups
         self._key_groupidx_maps = key_groupidx_maps
         self._groups_flags = []
@@ -693,7 +626,6 @@ class AllReducer():
                 flags.append(0)
             self._groups_flags.append(flags)
         logger.info('offsets: ', self._merged_parameter_offsets)
-
     def _layer2group(self, tensor: torch.Tensor, name):
         group_buffers = torch.zeros((self.num_workers, self.chunck_size),
                                     device=self._device)
@@ -702,7 +634,6 @@ class AllReducer():
             (pl, pr), (gl, gr) = self._spar_groups[g][name]
             group_buffers[g][gl:gr] = tensor[pl:pr]
         return group_buffers
-
     def _group2layer(self, group_buffers: torch.Tensor):
         tensor_dict = {
             name: torch.zeros(numel, device=self._device)
@@ -718,7 +649,6 @@ class AllReducer():
         self._groups_flags[group_idx] = [0] * len(
             self._groups_flags[group_idx])
         return tensor_dict
-
     def _push_to_buffer(self, name, tensor):
         if len(self._groups) == len(self._sequential_keys):
             return name, tensor
@@ -739,7 +669,6 @@ class AllReducer():
         if idx >= 0:
             return name, None
         return new_key, self._merged_parameters[new_key]
-
     def _pull_from_buffer(self, name, merged_tensor):
         if len(self._groups) == len(self._sequential_keys):
             return {name: merged_tensor}
@@ -759,17 +688,13 @@ class AllReducer():
             tensor.data = merged_tensor.data[offset:offset + numel]
             tensors[k] = tensor.view(original_tensor.shape)
         return tensors
-
     def rank(self):
         return self._comm.rank
-
     def size(self):
         return self._comm.size
-
     def allocate_sparse_storages(self):
         for k, v in self._merged_parameters.items():
             self.allocate_storage(k, v)
-
     def _print_profiling(self):
         if self._profiling and self.rank() == 0 and len(
                 self._allreduce_timers.keys()) > 0 and len(
@@ -795,7 +720,6 @@ class AllReducer():
             total_dm = 0.0
             total_d2h = 0.0
             total_h2d = 0.0
-
             for g in self._groups:
                 ct = 0.0
                 sz = 0
@@ -822,7 +746,6 @@ class AllReducer():
                 total_d2h += d2h
                 h2d = np.mean(h2ds.get(k, [0.]))
                 total_h2d += h2d
-
                 # if len(self._compression_timers) != 0:
                 #     logger.info('[rank:%d]%s[%d]: %f,%f,%f,%f,%f,%f,%f', self.rank(), k[0:3]+'...'+k[-3:], sz, ct,mg,cp,ar,dm,d2h,h2d)
                 # else:
@@ -833,7 +756,6 @@ class AllReducer():
                 logger.info("[CODEX][rank:%d] total_avg: merge=%f, compress=%f, comm=%f, demerge=%f, d2h=%f, h2d=%f, compute=%f", self.rank(), self._codex_acc["merge"]/c, self._codex_acc["compress"]/c, self._codex_acc["comm"]/c, self._codex_acc["demerge"]/c, self._codex_acc["d2h"]/c, self._codex_acc["h2d"]/c, (self._codex_acc.get("compute",0.0)/max(1, int(self._codex_acc.get("compute_count",0)))))
                 self._codex_acc = {"merge":0.0, "compress":0.0, "comm":0.0, "demerge":0.0, "d2h":0.0, "h2d":0.0, "count":0}
                 mgs.pop(k, None)
-
                 if len(self._compression_timers) != 0:
                     cps.pop(k, None)
                 ars.pop(k, None)
@@ -843,17 +765,14 @@ class AllReducer():
             logger.info('[rank:%d]%s[%d]: %f,%f,%f,%f,%f,%f,%f', self.rank(),
                         'total', total_sz, total_ct, total_mg, total_cp,
                         total_ar, total_dm, total_d2h, total_h2d)
-
     def reset(self):
         self._for_reductions = self._default_for_reductions.copy()
         # self._print_profiling()  # disabled by CODEX
-
     def add_tensor(self, name, tensor):
         if name in self._entries:
             return
         self._entries[name] = tensor
         return name
-
     def get_current_density(self):
         density = self._density
         if self._dynamic_densities is not None:
@@ -862,7 +781,6 @@ class AllReducer():
             else:
                 density = self._dynamic_densities[self.train_epoch]
         return density
-
     def get_approximate_sigma_scale(self, density):
         sigma_scale = 1
         if density > 0.7:
@@ -874,15 +792,12 @@ class AllReducer():
         else:
             sigma_scale = 3.0
         return sigma_scale
-
     def get_result(self, name):
         return self._outputs[name]
-
     def allocate_storage(self, name, tensor):
         storage = {}
         self._sparse_storages[name] = storage
         self._sparse_storages_topk[name] = {}
-
     def _sparse_allreduce(self,
                         name,
                         tensor,
@@ -909,12 +824,10 @@ class AllReducer():
                 pass
         except Exception:
             pass
-
         result = None
         included_indexes = None
         full_mean = None
         full_var = None
-
         t_comm = time.time()
         if self._compression.name in ['gtopk']:
             result, global_indexes, included_indexes = gtopk_sparse_allreduce(
@@ -950,7 +863,6 @@ class AllReducer():
             final_indexes = gi.cuda(tensor.device, non_blocking=False)
         else:
             final_indexes = gi
-
         tensor.fill_(0.0)
         if self._compression.name in ['gtopk']:
             tensor[final_indexes] = r
@@ -970,7 +882,6 @@ class AllReducer():
                 values = tensor.data[indexes]
                 tensor.data.fill_(0.0)
                 tensor.data[indexes] = values.data
-
         tensor /= self.size()
         if self._profiling:
             force_insert_item(self._h2d_times, name, time.time() - stime)
@@ -987,7 +898,6 @@ class AllReducer():
         except Exception:
             pass
         return tensor, included_indexes, full_mean
-
     def _dense_allreduce(self, name, tensor):
         ct = tensor
         shape = tensor.shape
@@ -995,16 +905,13 @@ class AllReducer():
             entry = ct.data.cpu().numpy()
         else:
             entry = ct.data.numpy()
-
         result = dense_allreduce(self._comm, entry)
-
         result = result.reshape(shape)
         r = torch.from_numpy(result)
         if tensor.is_cuda:
             r = r.cuda(tensor.device, non_blocking=False)
         r /= self.size()
         return r
-
     @torch.no_grad()
     def run(self):
         # return
@@ -1022,7 +929,6 @@ class AllReducer():
                 if flag == 1:
                     t = time.time()
                     flag = 0
-
                 # push the tensor to the buffer
                 stime = time.time()
                 new_name, new_tensor = self._push_to_buffer(name, tensor)
@@ -1041,24 +947,19 @@ class AllReducer():
                         pass
                 except Exception:
                     pass
-
                 if new_tensor is None:
                     continue
                 flag = 1
-
                 num_workers = comm.size
                 rank_ALL = comm.rank
                 device = self._device
-
                 stime = time.time()
                 # Ensure non-Spardl paths also produce a merged result tensor
                 if not (self._sparse and self._compression.name == 'spardl'):
                     if self._sparse:
                         # Use the selected compressor to compute sparse indices/values and time it
                         if new_tensor.is_cuda: torch.cuda.synchronize()
-
                         cstime = time.time()
-
                         try:
                             out1, out2 = self._compression.compress(new_tensor, name=new_name, ratio=self._density)
                         except TypeError:
@@ -1096,6 +997,9 @@ class AllReducer():
                                 if new_tensor.is_cuda:
                                     torch.cuda.synchronize()
                                 cp_time = time.time() - cstime
+                            if new_tensor.is_cuda:
+                                 torch.cuda.synchronize()
+                            cp_time = time.time() - cstime
                             try:
                                 self._codex_acc["compress"] += cp_time
                                 try:
@@ -1183,11 +1087,9 @@ class AllReducer():
                             all_value_rbuffers.append(
                                 whole_value_rbuffers[self.chunck_size * i:])
                             all_size_rbuffers.append(np.array([0]))
-
                     result = torch.zeros((self.num_workers, self.chunck_size),
                                         dtype=torch.float32,
                                         device=device)
-
                     cstime = time.time()
                     g_id = self.all_send_blocks[0] if len(
                         self.all_send_blocks) else 0
@@ -1209,7 +1111,6 @@ class AllReducer():
                     ).astype(np.float32)
                     # self._local_residual[g_id] = split_tensors[g_id].clone()
                     self._local_residual[g_id][send_index_buffer] = 0.
-
                     compress_t1 = time.time() - cstime
                     compress_t2 = 0
                     last_list = self.last_list
@@ -1261,7 +1162,6 @@ class AllReducer():
                                     tag=3))
                         # logger.info(('sr once: ', time.time()-sr_one_time, ' time: ', i))
                         MPI.Request.Waitall(reqs)
-
                         if self.Group_num == 1 or (self.Group_num > 1
                                                 and i < self.sr_round):
                             size = int(all_size_rbuffers[i])
@@ -1273,7 +1173,6 @@ class AllReducer():
                                 device, non_blocking=False)
                             split_tensors[
                                 self.all_recv_blocks[i]][rindex] += rvalue
-
                             ctime = time.time()
                             if i < self.sr_round - 1:
                                 next_block = self.all_send_blocks[i + 1]
@@ -1394,7 +1293,6 @@ class AllReducer():
                         size=[self.chunck_size],
                         dtype=torch.float32,
                         device=device).coalesce()
-
                     send_index_buffer = sag_coo.indices().squeeze_(0)
                     # logger.info(send_index_buffer.numel())
                     send_value_buffer = sag_coo.values()
@@ -1445,7 +1343,6 @@ class AllReducer():
                         pass
                     # if self.rank()==0:
                     #     logger.info(("sr time:", time.time()-sr_time))
-
                     # ——————————————————allgather—————————————————�?
                     ag_time = time.time()
                     rank = rank_ALL % num_workers
@@ -1454,7 +1351,6 @@ class AllReducer():
                     last_list2 = list(range(rank, num_workers))
                     if rank > 0:
                         last_list2 += list(range(0, rank))
-
                     self.allgather_rindex_buffers[last_list[
                         last_list2[0]]] = send_index_buffer
                     self.allgather_rvalue_buffers[last_list[
@@ -1508,7 +1404,6 @@ class AllReducer():
                                     source=source,
                                     tag=b * 3 + 2))
                         MPI.Request.Waitall(reqs)
-
                     result = torch.zeros((self.num_workers, self.chunck_size),
                                         dtype=torch.float32,
                                         device=device)
@@ -1525,15 +1420,12 @@ class AllReducer():
                             value = torch.from_numpy(value).to(device)
                             value /= self.size()
                             result[i][index] = value
-
                             split_tensors_o[i][index] = self._local_residual[
                                 i][index]
                             self._local_residual[i] = split_tensors_o[i]
                             # self._local_residual[i][index] = 0.
-
                         # if self.rank()==0:
                         #     logger.info(('ag time:', time.time()-ag_time))
-
                 self._allreduce_counter += 1
                 comm_time = time.time() - stime
                 self.communication_time += comm_time
@@ -1554,7 +1446,6 @@ class AllReducer():
                                     time.time() - stime)
                     force_insert_item(self._allreduce_timers2, new_name,
                                     time.time() - stime)
-
                 # Decouple on the merged gradients
                 stime = time.time()
                 tensors = self._pull_from_buffer(new_name, result.view(-1))
@@ -1587,7 +1478,6 @@ class AllReducer():
                 # time.sleep(rank_ALL)
                 # logger.info(torch.sort(result))
                 # return
-
             if len(self._for_reductions) == 0:
                 self.reset()
                 torch.cuda.synchronize()
@@ -1596,11 +1486,8 @@ class AllReducer():
                 # Reset iter accumulator
                 self._codex_iter = {'comm': 0.0, 'compress': 0.0, 'sparse': 0.0}
                 self._msg_queue2.put('DONE')
-
     def stop(self):
         self._running = False
-
-
     def codex_epoch_flush(self):
         """Return and reset epoch-level accumulators for communication/compression/sparse-overhead.
         This is auxiliary profiling and does not affect original timers/logs.
@@ -1613,7 +1500,6 @@ class AllReducer():
             comm, comp, sparse = 0.0, 0.0, 0.0
         self._codex_epoch = {'comm': 0.0, 'compress': 0.0, 'sparse': 0.0}
         return comm, comp, sparse
-
 def benchmark_gtopk_sparse_allreduce():
     logger.setLevel(logging.INFO)
     comm = MPI.COMM_WORLD
@@ -1631,7 +1517,6 @@ def benchmark_gtopk_sparse_allreduce():
     tensor[indexes] = tmp
     logger.debug('[%d]%s', rank, tensor)
     storage = {}
-
     t = gtopk_sparse_allreduce(comm, tensor, storage=storage, indexes=indexes)
     iteration = 10
     stime = time.time()
@@ -1642,7 +1527,5 @@ def benchmark_gtopk_sparse_allreduce():
                                     indexes=indexes)
     total_time = time.time() - stime
     logger.info('average time: %f', total_time / iteration)
-
-
 if __name__ == '__main__':
     benchmark_gtopk_sparse_allreduce()

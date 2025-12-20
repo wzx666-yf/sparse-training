@@ -229,7 +229,7 @@ if __name__ == '__main__':
     hdlr.setFormatter(formatter)
     logger.addHandler(hdlr)
     logger.info('Configurations: %s', args)
-    logger.info('Interpreter: %s', sys.version)
+    # logger.info('Interpreter: %s', sys.version)
 
     robust_ssgd(args.dnn, args.dataset, args.data_dir, args.nworkers, args.lr,
                 args.batch_size, args.nsteps_update, args.max_epochs,
